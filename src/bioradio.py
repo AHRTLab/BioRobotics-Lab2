@@ -33,9 +33,11 @@ License: Educational use
 """
 
 import struct
+import sys
 import time
 import threading
 import logging
+import platform
 from enum import IntEnum, IntFlag
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Callable
@@ -44,6 +46,9 @@ import math
 
 import serial
 import serial.tools.list_ports
+
+IS_MACOS = sys.platform == "darwin"
+IS_WINDOWS = sys.platform == "win32"
 
 # ---------------------------------------------------------------------------
 # Logging
