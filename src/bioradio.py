@@ -18,8 +18,8 @@ Usage:
     # Connect with explicit ports
     # Windows:
     radio = BioRadio(port_in="COM9", port_out="COM10")
-    # macOS (device name "AVA" appears in port path):
-    radio = BioRadio(port_in="/dev/tty.AVA", port_out="/dev/cu.AVA")
+    # macOS (device name appears in port path, single port for both TX/RX):
+    radio = BioRadio(port_in="/dev/tty.BioRadioAYA")
 
     radio.connect()
     config = radio.get_configuration()
@@ -325,7 +325,7 @@ class DataSample:
 # Known BioRadio device names that appear in port paths / descriptions.
 # The BioRadio's 4-char device ID (e.g. "AVA ") is embedded in the
 # Bluetooth serial port name on macOS (/dev/tty.AVA-SerialPort).
-BIORADIO_DEVICE_NAMES = ["ava", "bioradio", "biocapture"]
+BIORADIO_DEVICE_NAMES = ["bioradioaya", "bioradio", "ava", "aya", "biocapture"]
 
 # Generic keywords that suggest a serial bridge (FTDI, BT SPP, etc.)
 _GENERIC_SERIAL_KW = ["ftdi", "serial", "usb", "bluetooth", "standard"]
@@ -760,25 +760,28 @@ class BioRadio:
 
     Cross-platform:
         - Windows: port_in="COM9", port_out="COM10"
-        - macOS:   port_in="/dev/tty.AVA", port_out="/dev/cu.AVA"
-                   (or both may be the same tty device)
+        - macOS:   port_in="/dev/tty.BioRadioAYA" (single port for both)
+                   The device name (e.g. "AYA") appears in the port path.
 
     Args:
         port_in:  Serial port for incoming data (device -> PC).
                   On a dual-port setup, this receives streaming data.
-                  Windows: "COM9"  /  macOS: "/dev/tty.AVA"
+                  Windows: "COM9"  /  macOS: "/dev/tty.BioRadioAYA"
         port_out: Serial port for outgoing commands (PC -> device).
                   If None, uses port_in for both directions (single-port mode).
-                  Windows: "COM10" /  macOS: "/dev/cu.AVA"
+                  Windows: "COM10" /  macOS: same as port_in (single port)
         baud:     Baud rate (default 460800)
     """
 
     def __init__(self, port_in: Optional[str] = None,
                  port_out: Optional[str] = None,
                  baud: int = BAUD_RATE):
-        # Platform-aware defaults
+        # Platform-aware defaults.
+        # On macOS, Bluetooth serial typically creates a single /dev/tty.* port
+        # whose name includes the device name (e.g. /dev/tty.BioRadioAYA).
+        # Use scan_for_bioradio() to find the actual port name.
         if port_in is None:
-            port_in = "COM9" if IS_WINDOWS else "/dev/tty.AVA"
+            port_in = "COM9" if IS_WINDOWS else "/dev/tty.BioRadioAYA"
         if port_out is None:
             port_out = "COM10" if IS_WINDOWS else port_in
         self.port_in_name = port_in
@@ -858,13 +861,24 @@ class BioRadio:
 
         logger.info(f"Connecting: IN={self.port_in_name}, OUT={self.port_out_name}")
 
+        # On macOS, Bluetooth serial needs slightly longer timeouts and
+        # we should disable RTS/DTR toggling which can reset BT devices.
+        read_timeout = 1.0 if IS_MACOS else 0.5
+        write_timeout = 1.0 if IS_MACOS else 0.5
+
         try:
             self._ser_out = serial.Serial(
                 port=self.port_out_name,
                 baudrate=self.baud,
-                timeout=0.5,
-                write_timeout=0.5,
+                timeout=read_timeout,
+                write_timeout=write_timeout,
+                rtscts=False,
+                dsrdtr=False,
             )
+            # On macOS, don't toggle DTR/RTS as it can disrupt BT connection
+            if IS_MACOS:
+                self._ser_out.dtr = False
+                self._ser_out.rts = False
         except serial.SerialException as e:
             raise ConnectionError(f"Cannot open output port {self.port_out_name}: {e}")
 
@@ -873,14 +887,26 @@ class BioRadio:
                 self._ser_in = serial.Serial(
                     port=self.port_in_name,
                     baudrate=self.baud,
-                    timeout=0.5,
-                    write_timeout=0.5,
+                    timeout=read_timeout,
+                    write_timeout=write_timeout,
+                    rtscts=False,
+                    dsrdtr=False,
                 )
+                if IS_MACOS:
+                    self._ser_in.dtr = False
+                    self._ser_in.rts = False
             except serial.SerialException as e:
                 self._ser_out.close()
                 raise ConnectionError(f"Cannot open input port {self.port_in_name}: {e}")
         else:
             self._ser_in = self._ser_out
+
+        # Drain any stale data in the buffer
+        time.sleep(0.1)
+        if self._ser_in.in_waiting:
+            self._ser_in.read(self._ser_in.in_waiting)
+        if self._ser_out != self._ser_in and self._ser_out.in_waiting:
+            self._ser_out.read(self._ser_out.in_waiting)
 
         # Get firmware version
         self._get_firmware_version()
@@ -917,16 +943,24 @@ class BioRadio:
     # ------------------------------------------------------------------
     def _get_firmware_version(self):
         """GetGlobal 0x00 -> firmware and hardware version."""
-        for attempt in range(3):
+        max_attempts = 5 if IS_MACOS else 3
+        for attempt in range(max_attempts):
             try:
+                logger.debug(f"GetFirmwareVersion attempt {attempt + 1}/{max_attempts}")
                 resp = self._send_command(DeviceCommand.GetGlobal, bytes([0x00]))
                 if resp and resp.is_response and len(resp.data) >= 6:
                     self.firmware_version = f"{resp.data[2]}.{resp.data[3]:02d}"
                     self.hardware_version = f"{resp.data[4]}.{resp.data[5]:02d}"
                     return
-            except TimeoutError:
-                time.sleep(0.05)
-        raise ConnectionError("Failed to get firmware version after 3 attempts")
+                else:
+                    logger.debug(f"  Got response but unexpected: cmd={resp.command if resp else None} "
+                                 f"len={len(resp.data) if resp else 0} "
+                                 f"is_resp={resp.is_response if resp else None} "
+                                 f"data={resp.data.hex(' ') if resp and resp.data else 'empty'}")
+            except TimeoutError as e:
+                logger.debug(f"  Timeout on attempt {attempt + 1}: {e}")
+                time.sleep(0.2 if IS_MACOS else 0.05)
+        raise ConnectionError(f"Failed to get firmware version after {max_attempts} attempts")
 
     def _get_device_id(self):
         """GetGlobal 0x01 -> 4-char device name."""
@@ -1163,27 +1197,70 @@ class BioRadio:
         raise last_err
 
     def _read_response_blocking(self, timeout: float) -> Packet:
-        """Read a response directly (used before listener thread starts)."""
+        """
+        Read a response directly (used before listener thread starts).
+
+        On macOS with Bluetooth serial, `in_waiting` can be unreliable,
+        so we also do a blocking `read(1)` using the serial port's own
+        timeout to ensure we catch incoming bytes.
+        """
         deadline = time.monotonic() + timeout
         buf = bytearray()
 
+        # Which port(s) to read from
+        read_port = self._ser_in if self._ser_in else self._ser_out
+
         while time.monotonic() < deadline:
-            if self._ser_in and self._ser_in.in_waiting:
-                chunk = self._ser_in.read(self._ser_in.in_waiting)
-                buf.extend(chunk)
-            elif self._ser_out != self._ser_in and self._ser_out.in_waiting:
-                chunk = self._ser_out.read(self._ser_out.in_waiting)
-                buf.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            # Method 1: check in_waiting (works well on Windows)
+            waiting = read_port.in_waiting
+            if waiting > 0:
+                chunk = read_port.read(waiting)
+                if chunk:
+                    buf.extend(chunk)
+                    logger.debug(f"RX ({len(chunk)} bytes): {chunk.hex(' ')}")
             else:
-                time.sleep(0.005)
-                continue
+                # Method 2: blocking read with short timeout (critical for macOS BT)
+                # The serial port's own timeout (set in connect()) will limit the wait
+                old_timeout = read_port.timeout
+                read_port.timeout = min(0.5, remaining)
+                try:
+                    byte = read_port.read(1)
+                    if byte:
+                        buf.extend(byte)
+                        # Got a byte — read any remaining available data
+                        if read_port.in_waiting > 0:
+                            more = read_port.read(read_port.in_waiting)
+                            if more:
+                                buf.extend(more)
+                        logger.debug(f"RX ({len(buf)} bytes total): {buf.hex(' ')}")
+                finally:
+                    read_port.timeout = old_timeout
 
-            # Try to parse
-            pkt = self._try_parse_response(buf)
-            if pkt:
-                return pkt
+            # Also check the other port if we have two distinct ports
+            if self._ser_out != self._ser_in and self._ser_out:
+                waiting2 = self._ser_out.in_waiting
+                if waiting2 > 0:
+                    chunk2 = self._ser_out.read(waiting2)
+                    if chunk2:
+                        buf.extend(chunk2)
+                        logger.debug(f"RX out-port ({len(chunk2)} bytes): {chunk2.hex(' ')}")
 
-        raise TimeoutError(f"No response within {timeout}s (got {len(buf)} bytes: {buf.hex(' ')})")
+            # Try to parse a response from accumulated bytes
+            if buf:
+                pkt = self._try_parse_response(buf)
+                if pkt:
+                    logger.debug(f"Parsed response: cmd={pkt.command.name} "
+                                 f"data={pkt.data.hex(' ') if pkt.data else 'empty'}")
+                    return pkt
+
+        raise TimeoutError(
+            f"No response within {timeout}s "
+            f"(got {len(buf)} bytes: {buf.hex(' ') if buf else 'nothing'})"
+        )
 
     def _try_parse_response(self, buf: bytearray) -> Optional[Packet]:
         """Try to parse a single response packet from a byte buffer."""
@@ -1537,11 +1614,11 @@ Examples (Windows):
 
 Examples (macOS):
   python bioradio.py --scan                                    # Scan for /dev/tty.* ports
-  python bioradio.py --in /dev/tty.AVA --out /dev/cu.AVA       # Connect with explicit ports
-  python bioradio.py --in /dev/tty.AVA --info                  # Print device info only
+  python bioradio.py --in /dev/tty.BioRadioAYA                 # Connect (single port)
+  python bioradio.py --in /dev/tty.BioRadioAYA --info          # Print device info only
 
-Tip: run --scan first to find your BioRadio's port names.
-     On macOS the device name (e.g. "AVA") appears in the port path.
+Tip: run --scan first to find your BioRadio's port name.
+     On macOS the device name (e.g. "AYA") appears in the port path as /dev/tty.BioRadioAYA.
         """
     )
     parser.add_argument("--scan", action="store_true",
