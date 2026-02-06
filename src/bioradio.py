@@ -487,7 +487,7 @@ def scan_for_bioradio(verbose: bool = True,
     return candidates
 
 
-def probe_bioradio_port(port_name: str, timeout: float = 2.0,
+def probe_bioradio_port(port_name: str, timeout: float = 0,
                         verbose: bool = False) -> Optional[bytes]:
     """
     Attempt to open a port and send a GetGlobal command to see if a
@@ -498,14 +498,26 @@ def probe_bioradio_port(port_name: str, timeout: float = 2.0,
     actually works for bidirectional communication (typically the lower-
     numbered port, e.g. COM9 works, COM10 does not).
 
+    On macOS, BT serial can be slow to stabilize — this function sends
+    the probe command multiple times (up to 3 on macOS, 1 on Windows)
+    with increasing stabilization delays between attempts.
+
     Args:
         port_name: Serial port path (e.g. "COM9" or "/dev/cu.BioRadioAYA")
-        timeout:   Max seconds to wait for a response.
+        timeout:   Max seconds to wait for a response per attempt.
+                   Default 0 means auto: 3.0s on macOS, 2.0s on Windows.
         verbose:   Print debug info to stdout.
 
     Returns:
         Raw response bytes if the device responded, or None on failure.
     """
+    if timeout <= 0:
+        timeout = 3.0 if IS_MACOS else 2.0
+
+    # On macOS, BT serial is flaky — try multiple times with increasing delays
+    max_attempts = 3 if IS_MACOS else 1
+    stabilization_delays = [0.5, 1.0, 2.0] if IS_MACOS else [0.25]
+
     try:
         ser = serial.Serial(
             port=port_name,
@@ -519,56 +531,76 @@ def probe_bioradio_port(port_name: str, timeout: float = 2.0,
             ser.dtr = False
             ser.rts = False
 
-        time.sleep(0.25)  # SDK's 250ms post-connect delay
+        cmd = bytes([SYNC_BYTE, 0xF1, 0x00])  # GetGlobal FirmwareVersion
 
-        # Drain any stale data
-        try:
-            if ser.in_waiting:
-                ser.read(ser.in_waiting)
-        except OSError:
-            pass
+        for attempt in range(max_attempts):
+            stab_delay = stabilization_delays[min(attempt, len(stabilization_delays) - 1)]
 
-        # Send GetGlobal firmware version: F0 F1 00
-        # Header = 0xF0 (GetGlobal) | 0x01 (len=1) = 0xF1
-        cmd = bytes([SYNC_BYTE, 0xF1, 0x00])
-        ser.write(cmd)
-        ser.flush()
+            if verbose and attempt > 0:
+                print(f"  [{port_name}] Retry {attempt + 1}/{max_attempts} "
+                      f"(delay={stab_delay:.2f}s) ...")
 
-        if verbose:
-            print(f"  [{port_name}] TX: {cmd.hex(' ')}")
+            time.sleep(stab_delay)
 
-        # Read response with blocking read
-        response = bytearray()
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            ser.timeout = min(0.5, remaining)
-            byte = ser.read(1)
-            if byte:
-                response.extend(byte)
-                time.sleep(0.01)
-                try:
-                    waiting = ser.in_waiting
-                    if waiting > 0:
-                        response.extend(ser.read(waiting))
-                except OSError:
-                    pass
-                # Check if we have a complete response (sync + header + data)
-                if SYNC_BYTE in response and len(response) >= 3:
+            # Drain any stale data
+            try:
+                if ser.in_waiting:
+                    stale = ser.read(ser.in_waiting)
+                    if verbose and stale:
+                        print(f"  [{port_name}] Drained {len(stale)} stale bytes")
+            except OSError:
+                pass
+
+            # Send the probe command
+            try:
+                ser.write(cmd)
+                ser.flush()
+            except serial.SerialTimeoutException:
+                if verbose:
+                    print(f"  [{port_name}] Write timeout (port not bidirectional)")
+                ser.close()
+                return None
+
+            if verbose:
+                print(f"  [{port_name}] TX: {cmd.hex(' ')}")
+
+            # Read response with blocking read
+            response = bytearray()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
+                ser.timeout = min(0.5, remaining)
+                byte = ser.read(1)
+                if byte:
+                    response.extend(byte)
+                    time.sleep(0.01)
+                    try:
+                        waiting = ser.in_waiting
+                        if waiting > 0:
+                            response.extend(ser.read(waiting))
+                    except OSError:
+                        pass
+                    # Check if we have a complete response (sync + header + data)
+                    if SYNC_BYTE in response and len(response) >= 3:
+                        break
+
+            if verbose:
+                if response:
+                    print(f"  [{port_name}] RX ({len(response)} bytes): {response.hex(' ')}")
+                else:
+                    print(f"  [{port_name}] RX: no response")
+
+            if SYNC_BYTE in response and len(response) >= 3:
+                ser.close()
+                return bytes(response)
+
+            # No response on this attempt — will retry if macOS
+            if verbose and attempt < max_attempts - 1:
+                print(f"  [{port_name}] No response, will retry...")
 
         ser.close()
-
-        if verbose:
-            if response:
-                print(f"  [{port_name}] RX ({len(response)} bytes): {response.hex(' ')}")
-            else:
-                print(f"  [{port_name}] RX: no response")
-
-        if SYNC_BYTE in response and len(response) >= 3:
-            return bytes(response)
         return None
 
     except serial.SerialTimeoutException:
@@ -590,7 +622,8 @@ def find_bioradio_port(verbose: bool = True) -> Optional[str]:
     but only ONE actually works for two-way communication with the device.
     This function probes each candidate to find the one that responds.
 
-    On macOS, there's typically a single /dev/cu.* port.
+    On macOS, BT serial can be slow to wake up. probe_bioradio_port()
+    already does multiple attempts with increasing delays on macOS.
 
     Args:
         verbose: Print scanning and probing progress.
@@ -608,7 +641,8 @@ def find_bioradio_port(verbose: bool = True) -> Optional[str]:
     for port_name in candidates:
         if verbose:
             print(f"  Probing {port_name}...")
-        response = probe_bioradio_port(port_name, timeout=2.0, verbose=verbose)
+        # timeout=0 means auto (3.0s on macOS, 2.0s on Windows)
+        response = probe_bioradio_port(port_name, timeout=0, verbose=verbose)
         if response is not None:
             if verbose:
                 print(f"\n  [OK] BioRadio found on {port_name}!")
@@ -617,6 +651,8 @@ def find_bioradio_port(verbose: bool = True) -> Optional[str]:
     if verbose:
         print("\n  [FAIL] No BioRadio responded on any port.")
         print("    Make sure the device is powered on and paired via Bluetooth.")
+        if IS_MACOS:
+            print("    Try running: python bioradio_diagnose.py  for detailed diagnostics")
     return None
 
 
@@ -1078,7 +1114,9 @@ class BioRadio:
 
         # The .NET SDK does a 250ms sleep after opening the Bluetooth connection.
         # This gives the BT link time to stabilize before we send commands.
-        time.sleep(0.25)
+        # On macOS BT serial, we use a longer delay since the link is slower
+        # to stabilize (empirically, 500ms works better than 250ms).
+        time.sleep(0.5 if IS_MACOS else 0.25)
 
         # Drain any stale data in the buffer
         try:
