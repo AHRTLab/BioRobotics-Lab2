@@ -1,0 +1,16 @@
+/.idea
+<<<<<<< Updated upstream
+/notebooks/.ipynb_checkpoints
+data/p1_test_trial001_imu_20260125_202827.csv
+data/p1_test_trial001_emg_20260125_202827.csv
+notebooks/Lab1_EMG_Analysis.ipynb
+notebooks/Lab1_EMG_Analysis.ipynb
+notebooks/Lab1_EMG_Analysis.ipynb
+notebooks/Lab1_EMG_Analysis_Instructor_Copy.ipynb
+docs/.DS_Store
+src/.DS_Store
+/recordings
+=======
+src/__pycache__/myo_interface.cpython-313.pyc
+>>>>>>> Stashed changes
+*.pyc
