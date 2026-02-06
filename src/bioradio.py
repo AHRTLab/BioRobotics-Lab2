@@ -2,7 +2,9 @@
 bioradio.py - Pure Python/pyserial interface for the GLNeuroTech BioRadio device.
 
 Replaces the .NET BioRadioSDK with a standalone Python implementation.
-Communicates via serial (COM) ports using the BioRadio's custom binary protocol.
+Communicates via serial ports using the BioRadio's custom binary protocol.
+
+Cross-platform: Windows (COMx), macOS (/dev/tty.*, /dev/cu.*), Linux.
 
 Requirements:
     pip install pyserial
@@ -10,11 +12,15 @@ Requirements:
 Usage:
     from src.bioradio import BioRadio, scan_for_bioradio
 
-    # Auto-scan for device
+    # Auto-scan for device (works on Windows, macOS, Linux)
     ports = scan_for_bioradio()
 
     # Connect with explicit ports
+    # Windows:
     radio = BioRadio(port_in="COM9", port_out="COM10")
+    # macOS (device name "AVA" appears in port path):
+    radio = BioRadio(port_in="/dev/tty.AVA", port_out="/dev/cu.AVA")
+
     radio.connect()
     config = radio.get_configuration()
     radio.start_acquisition()
@@ -313,42 +319,117 @@ class DataSample:
 
 
 # ---------------------------------------------------------------------------
-# COM Port Scanner
+# COM / Serial Port Scanner (cross-platform: Windows, macOS, Linux)
 # ---------------------------------------------------------------------------
-def scan_for_bioradio(verbose: bool = True) -> List[str]:
-    """
-    Scan all COM ports and return those that might be a BioRadio.
 
-    The BioRadio typically creates a paired set of COM ports via its
-    Bluetooth or USB-serial bridge. Look for FTDI or "Standard Serial"
-    ports at high baud rates.
+# Known BioRadio device names that appear in port paths / descriptions.
+# The BioRadio's 4-char device ID (e.g. "AVA ") is embedded in the
+# Bluetooth serial port name on macOS (/dev/tty.AVA-SerialPort).
+BIORADIO_DEVICE_NAMES = ["ava", "bioradio", "biocapture"]
+
+# Generic keywords that suggest a serial bridge (FTDI, BT SPP, etc.)
+_GENERIC_SERIAL_KW = ["ftdi", "serial", "usb", "bluetooth", "standard"]
+
+
+def scan_for_bioradio(verbose: bool = True,
+                      device_name: Optional[str] = None) -> List[str]:
+    """
+    Scan all serial ports and return those that might be a BioRadio.
+
+    Cross-platform:
+      - **Windows**: looks for COMx ports (e.g. COM9, COM10)
+      - **macOS**:   looks for /dev/tty.* and /dev/cu.* containing the
+                     device name (default "AVA") or generic serial keywords
+      - **Linux**:   looks for /dev/ttyUSB* or /dev/ttyACM*
+
+    The BioRadio typically creates **two** serial ports:
+      - One for outgoing commands (PC → device)
+      - One for incoming data   (device → PC)
+
+    Args:
+        verbose:     Print a table of all ports found.
+        device_name: Override the BioRadio device name to search for
+                     (default searches for "AVA" and other known names).
 
     Returns:
-        List of COM port names (e.g. ['COM9', 'COM10'])
+        List of port paths sorted by relevance, best candidates first.
+        e.g. Windows: ['COM9', 'COM10']
+        e.g. macOS:   ['/dev/tty.AVA', '/dev/cu.AVA']
     """
+    search_names = list(BIORADIO_DEVICE_NAMES)
+    if device_name:
+        search_names.insert(0, device_name.lower())
+
     candidates = []
     ports = serial.tools.list_ports.comports()
+
     if verbose:
+        os_label = {"darwin": "macOS", "win32": "Windows"}.get(
+            sys.platform, sys.platform)
         print(f"\n{'='*60}")
-        print(f"  BioRadio COM Port Scanner")
+        print(f"  BioRadio Serial Port Scanner  ({os_label})")
         print(f"{'='*60}")
-        print(f"  Found {len(ports)} COM port(s):\n")
+        print(f"  Found {len(ports)} port(s):\n")
+
     for p in sorted(ports, key=lambda x: x.device):
+        dev = p.device or ""
         desc = p.description or ""
         mfr = p.manufacturer or ""
         hwid = p.hwid or ""
-        is_candidate = any(kw in desc.lower() + mfr.lower() + hwid.lower()
-                          for kw in ["ftdi", "serial", "bioradio", "usb",
-                                     "bluetooth", "standard"])
-        tag = " <-- possible BioRadio" if is_candidate else ""
+
+        # Combine all searchable text
+        search_text = (dev + desc + mfr + hwid).lower()
+
+        # Priority 1: matches a known BioRadio device name (e.g. "AVA")
+        is_bioradio = any(name in search_text for name in search_names)
+
+        # Priority 2: generic serial / BT / FTDI keyword
+        is_serial = any(kw in search_text for kw in _GENERIC_SERIAL_KW)
+
+        # On macOS, also flag any /dev/tty.* or /dev/cu.* that isn't
+        # a built-in (debug, MALS, wlan, etc.)
+        if IS_MACOS and not is_bioradio and not is_serial:
+            skip_builtins = ["debug", "mals", "wlan", "usbmodem"]
+            if (dev.startswith("/dev/tty.") or dev.startswith("/dev/cu.")):
+                if not any(bi in dev.lower() for bi in skip_builtins):
+                    is_serial = True
+
+        is_candidate = is_bioradio or is_serial
+        tag = ""
+        if is_bioradio:
+            tag = " <-- BioRadio detected!"
+        elif is_serial:
+            tag = " <-- possible BioRadio"
+
         if verbose:
-            print(f"  {p.device:8s}  {desc:35s}  {mfr}{tag}")
+            # Adapt column width for longer macOS paths
+            dev_width = max(8, len(dev) + 2)
+            desc_width = max(20, len(desc) + 2)
+            print(f"  {dev:<{dev_width}}  {desc:<{desc_width}}  {mfr}{tag}")
+
         if is_candidate:
-            candidates.append(p.device)
+            # Put definite BioRadio matches first
+            if is_bioradio:
+                candidates.insert(0, dev)
+            else:
+                candidates.append(dev)
 
     if verbose:
         print(f"\n  Candidates: {candidates if candidates else 'None found'}")
+        if not candidates:
+            if IS_MACOS:
+                print("\n  Troubleshooting (macOS):")
+                print("    1. Make sure BioRadio is powered on and paired via Bluetooth")
+                print("    2. Check System Settings > Bluetooth for 'AVA' device")
+                print("    3. Ports appear as /dev/tty.AVA or /dev/cu.AVA")
+                print("    4. Try: ls /dev/tty.* /dev/cu.*  in Terminal")
+            elif IS_WINDOWS:
+                print("\n  Troubleshooting (Windows):")
+                print("    1. Check Device Manager > Ports (COM & LPT)")
+                print("    2. BioRadio usually creates two COM ports")
+                print("    3. Make sure the device is paired via Bluetooth")
         print(f"{'='*60}\n")
+
     return candidates
 
 
@@ -356,6 +437,8 @@ def probe_bioradio_port(port_name: str, timeout: float = 2.0) -> bool:
     """
     Attempt to open a port and send a GetGlobal command to see if a
     BioRadio responds. Returns True if we get a valid response.
+
+    Works on both Windows (COMx) and macOS (/dev/tty.*, /dev/cu.*).
     """
     try:
         ser = serial.Serial(
@@ -675,16 +758,29 @@ class BioRadio:
     Communicates via serial ports using pyserial. Supports the full
     device protocol: connect, configure, acquire, parse data.
 
+    Cross-platform:
+        - Windows: port_in="COM9", port_out="COM10"
+        - macOS:   port_in="/dev/tty.AVA", port_out="/dev/cu.AVA"
+                   (or both may be the same tty device)
+
     Args:
-        port_in:  COM port for incoming data (device -> PC).
+        port_in:  Serial port for incoming data (device -> PC).
                   On a dual-port setup, this receives streaming data.
-        port_out: COM port for outgoing commands (PC -> device).
+                  Windows: "COM9"  /  macOS: "/dev/tty.AVA"
+        port_out: Serial port for outgoing commands (PC -> device).
                   If None, uses port_in for both directions (single-port mode).
+                  Windows: "COM10" /  macOS: "/dev/cu.AVA"
         baud:     Baud rate (default 460800)
     """
 
-    def __init__(self, port_in: str = "COM9", port_out: Optional[str] = "COM10",
+    def __init__(self, port_in: Optional[str] = None,
+                 port_out: Optional[str] = None,
                  baud: int = BAUD_RATE):
+        # Platform-aware defaults
+        if port_in is None:
+            port_in = "COM9" if IS_WINDOWS else "/dev/tty.AVA"
+        if port_out is None:
+            port_out = "COM10" if IS_WINDOWS else port_in
         self.port_in_name = port_in
         self.port_out_name = port_out or port_in
         self.baud = baud
@@ -1434,19 +1530,26 @@ def main():
         description="BioRadio Python Interface",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Examples (Windows):
   python bioradio.py --scan                    # Scan for COM ports
   python bioradio.py --in COM9 --out COM10     # Connect and acquire
   python bioradio.py --in COM9 --out COM10 --lsl  # Stream to LSL
-  python bioradio.py --in COM9 --info          # Print device info only
+
+Examples (macOS):
+  python bioradio.py --scan                                    # Scan for /dev/tty.* ports
+  python bioradio.py --in /dev/tty.AVA --out /dev/cu.AVA       # Connect with explicit ports
+  python bioradio.py --in /dev/tty.AVA --info                  # Print device info only
+
+Tip: run --scan first to find your BioRadio's port names.
+     On macOS the device name (e.g. "AVA") appears in the port path.
         """
     )
     parser.add_argument("--scan", action="store_true",
-                        help="Scan for available COM ports")
+                        help="Scan for available serial ports")
     parser.add_argument("--in", dest="port_in", default=None,
-                        help="Input COM port (e.g. COM9)")
+                        help="Input serial port (e.g. COM9 or /dev/tty.AVA)")
     parser.add_argument("--out", dest="port_out", default=None,
-                        help="Output COM port (e.g. COM10)")
+                        help="Output serial port (e.g. COM10 or /dev/cu.AVA)")
     parser.add_argument("--info", action="store_true",
                         help="Print device info and config, then exit")
     parser.add_argument("--lsl", action="store_true",

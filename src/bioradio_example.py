@@ -2,7 +2,7 @@
 bioradio_example.py - Student-friendly examples for using the BioRadio in Python.
 
 This script demonstrates how to:
-  1. Scan for the BioRadio COM ports
+  1. Scan for the BioRadio serial ports (works on Windows AND macOS)
   2. Connect to the device
   3. Read configuration and battery status
   4. Acquire EMG/BioPotential data
@@ -12,7 +12,9 @@ This script demonstrates how to:
 No .NET SDK or BioCapture software required - just Python + pyserial!
 
 Usage:
-    python src/bioradio_example.py
+    python src/bioradio_example.py                             # auto-scan
+    python src/bioradio_example.py --in COM9 --out COM10       # Windows
+    python src/bioradio_example.py --in /dev/tty.AVA           # macOS
 
 Requirements:
     pip install pyserial
@@ -59,7 +61,7 @@ def example_scan():
 # =====================================================================
 # Example 2: Connect and Read Device Info
 # =====================================================================
-def example_device_info(port_in="COM9", port_out="COM10"):
+def example_device_info(port_in=None, port_out=None):
     """
     Connect to the BioRadio and print device information.
     """
@@ -109,7 +111,7 @@ def example_device_info(port_in="COM9", port_out="COM10"):
 # =====================================================================
 # Example 3: Acquire Data for N Seconds
 # =====================================================================
-def example_acquire(port_in="COM9", port_out="COM10", duration=5.0):
+def example_acquire(port_in=None, port_out=None, duration=5.0):
     """
     Acquire BioPotential data for a specified duration and print stats.
     """
@@ -153,7 +155,7 @@ def example_acquire(port_in="COM9", port_out="COM10", duration=5.0):
 # =====================================================================
 # Example 4: Save Data to CSV
 # =====================================================================
-def example_save_csv(port_in="COM9", port_out="COM10",
+def example_save_csv(port_in=None, port_out=None,
                      duration=5.0, filename="bioradio_data.csv"):
     """
     Acquire data and save all BioPotential channels to a CSV file.
@@ -219,7 +221,7 @@ def example_save_csv(port_in="COM9", port_out="COM10",
 # =====================================================================
 # Example 5: Real-time Callback
 # =====================================================================
-def example_callback(port_in="COM9", port_out="COM10", duration=3.0):
+def example_callback(port_in=None, port_out=None, duration=3.0):
     """
     Use a callback function to process each data packet in real-time.
     This is useful for real-time control applications.
@@ -264,7 +266,7 @@ def example_callback(port_in="COM9", port_out="COM10", duration=3.0):
 # =====================================================================
 # Example 6: Stream to LSL
 # =====================================================================
-def example_lsl_stream(port_in="COM9", port_out="COM10", duration=10.0):
+def example_lsl_stream(port_in=None, port_out=None, duration=10.0):
     """
     Stream BioRadio data to the Lab Streaming Layer.
     Open the visualizer (src/visualizer.py) to see the data!
@@ -332,9 +334,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="BioRadio Examples")
     parser.add_argument("--in", dest="port_in", default=None,
-                        help="Input COM port (e.g. COM9)")
+                        help="Input port (e.g. COM9 or /dev/tty.AVA)")
     parser.add_argument("--out", dest="port_out", default=None,
-                        help="Output COM port (e.g. COM10)")
+                        help="Output port (e.g. COM10 or /dev/cu.AVA)")
     parser.add_argument("--example", type=int, default=0,
                         choices=[0, 1, 2, 3, 4, 5, 6],
                         help="Run specific example (0=menu)")
@@ -353,7 +355,8 @@ if __name__ == "__main__":
             args.port_out = ports[0]
         else:
             print("\nNo ports detected! Use --in and --out to specify manually.")
-            print("Example: python bioradio_example.py --in COM9 --out COM10")
+            print("Windows: python bioradio_example.py --in COM9 --out COM10")
+            print("macOS:   python bioradio_example.py --in /dev/tty.AVA")
             sys.exit(1)
 
     if args.port_out is None:
