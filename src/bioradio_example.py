@@ -14,7 +14,7 @@ No .NET SDK or BioCapture software required - just Python + pyserial!
 Usage:
     python src/bioradio_example.py                             # auto-scan
     python src/bioradio_example.py --in COM9 --out COM10       # Windows
-    python src/bioradio_example.py --in /dev/tty.AVA           # macOS
+    python src/bioradio_example.py --in /dev/cu.BioRadioAYA     # macOS (use cu.* not tty.*!)
 
 Requirements:
     pip install pyserial
@@ -334,7 +334,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="BioRadio Examples")
     parser.add_argument("--in", dest="port_in", default=None,
-                        help="Input port (e.g. COM9 or /dev/tty.AVA)")
+                        help="Input port (e.g. COM9 or /dev/cu.BioRadioAYA)")
     parser.add_argument("--out", dest="port_out", default=None,
                         help="Output port (e.g. COM10 or /dev/cu.AVA)")
     parser.add_argument("--example", type=int, default=0,
@@ -356,7 +356,7 @@ if __name__ == "__main__":
         else:
             print("\nNo ports detected! Use --in and --out to specify manually.")
             print("Windows: python bioradio_example.py --in COM9 --out COM10")
-            print("macOS:   python bioradio_example.py --in /dev/tty.AVA")
+            print("macOS:   python bioradio_example.py --in /dev/cu.BioRadioAYA")
             sys.exit(1)
 
     if args.port_out is None:

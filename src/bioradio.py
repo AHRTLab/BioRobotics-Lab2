@@ -18,8 +18,8 @@ Usage:
     # Connect with explicit ports
     # Windows:
     radio = BioRadio(port_in="COM9", port_out="COM10")
-    # macOS (device name appears in port path, single port for both TX/RX):
-    radio = BioRadio(port_in="/dev/tty.BioRadioAYA")
+    # macOS (use /dev/cu.* NOT /dev/tty.* — tty blocks on carrier detect!):
+    radio = BioRadio(port_in="/dev/cu.BioRadioAYA")
 
     radio.connect()
     config = radio.get_configuration()
@@ -414,15 +414,24 @@ def scan_for_bioradio(verbose: bool = True,
             else:
                 candidates.append(dev)
 
+    # On macOS, prefer /dev/cu.* over /dev/tty.* (tty blocks on carrier detect)
+    if IS_MACOS and candidates:
+        cu_first = sorted(candidates, key=lambda p: (
+            0 if "/dev/cu." in p else 1,   # cu.* first
+            0 if any(n in p.lower() for n in search_names) else 1  # BioRadio name first
+        ))
+        candidates = cu_first
+
     if verbose:
         print(f"\n  Candidates: {candidates if candidates else 'None found'}")
         if not candidates:
             if IS_MACOS:
                 print("\n  Troubleshooting (macOS):")
                 print("    1. Make sure BioRadio is powered on and paired via Bluetooth")
-                print("    2. Check System Settings > Bluetooth for 'AVA' device")
-                print("    3. Ports appear as /dev/tty.AVA or /dev/cu.AVA")
-                print("    4. Try: ls /dev/tty.* /dev/cu.*  in Terminal")
+                print("    2. Check System Settings > Bluetooth for the device")
+                print("    3. Use /dev/cu.* ports, NOT /dev/tty.* (tty blocks on carrier detect!)")
+                print("    4. Try: ls /dev/cu.* /dev/tty.*  in Terminal")
+                print("    5. Port name includes device name, e.g. /dev/cu.BioRadioAYA")
             elif IS_WINDOWS:
                 print("\n  Troubleshooting (Windows):")
                 print("    1. Check Device Manager > Ports (COM & LPT)")
@@ -759,17 +768,21 @@ class BioRadio:
     device protocol: connect, configure, acquire, parse data.
 
     Cross-platform:
-        - Windows: port_in="COM9", port_out="COM10"
-        - macOS:   port_in="/dev/tty.BioRadioAYA" (single port for both)
-                   The device name (e.g. "AYA") appears in the port path.
+        - Windows: port_in="COM9", port_out="COM10"  (two ports)
+        - macOS:   port="/dev/cu.BioRadioAYA"  (single bidirectional port)
+                   IMPORTANT: use /dev/cu.* NOT /dev/tty.* on macOS!
+                   tty.* waits for carrier detect and will hang on BT serial.
+
+    The BioRadio SDK uses a SINGLE bidirectional stream internally.
+    On Windows, the BT driver exposes two COM ports, but on macOS
+    it's a single /dev/cu.* device.
 
     Args:
         port_in:  Serial port for incoming data (device -> PC).
-                  On a dual-port setup, this receives streaming data.
-                  Windows: "COM9"  /  macOS: "/dev/tty.BioRadioAYA"
+                  Windows: "COM9"  /  macOS: "/dev/cu.BioRadioAYA"
         port_out: Serial port for outgoing commands (PC -> device).
-                  If None, uses port_in for both directions (single-port mode).
-                  Windows: "COM10" /  macOS: same as port_in (single port)
+                  If None, uses port_in for both directions.
+                  Windows: "COM10" /  macOS: same as port_in
         baud:     Baud rate (default 460800)
     """
 
@@ -777,11 +790,12 @@ class BioRadio:
                  port_out: Optional[str] = None,
                  baud: int = BAUD_RATE):
         # Platform-aware defaults.
-        # On macOS, Bluetooth serial typically creates a single /dev/tty.* port
-        # whose name includes the device name (e.g. /dev/tty.BioRadioAYA).
-        # Use scan_for_bioradio() to find the actual port name.
+        # On macOS, Bluetooth serial creates /dev/tty.* and /dev/cu.* ports.
+        # MUST use /dev/cu.* (call-out) — /dev/tty.* (call-in) blocks on
+        # carrier detect which hangs with Bluetooth serial.
+        # The SDK uses a single bidirectional stream, so one port for both.
         if port_in is None:
-            port_in = "COM9" if IS_WINDOWS else "/dev/tty.BioRadioAYA"
+            port_in = "COM9" if IS_WINDOWS else "/dev/cu.BioRadioAYA"
         if port_out is None:
             port_out = "COM10" if IS_WINDOWS else port_in
         self.port_in_name = port_in
@@ -901,12 +915,20 @@ class BioRadio:
         else:
             self._ser_in = self._ser_out
 
+        # The .NET SDK does a 250ms sleep after opening the Bluetooth connection.
+        # This gives the BT link time to stabilize before we send commands.
+        time.sleep(0.25)
+
         # Drain any stale data in the buffer
-        time.sleep(0.1)
-        if self._ser_in.in_waiting:
-            self._ser_in.read(self._ser_in.in_waiting)
-        if self._ser_out != self._ser_in and self._ser_out.in_waiting:
-            self._ser_out.read(self._ser_out.in_waiting)
+        try:
+            if self._ser_in.in_waiting:
+                stale = self._ser_in.read(self._ser_in.in_waiting)
+                logger.debug(f"Drained {len(stale)} stale bytes from input")
+            if self._ser_out != self._ser_in and self._ser_out.in_waiting:
+                stale = self._ser_out.read(self._ser_out.in_waiting)
+                logger.debug(f"Drained {len(stale)} stale bytes from output")
+        except Exception:
+            pass  # in_waiting may not be supported on all platforms
 
         # Get firmware version
         self._get_firmware_version()
@@ -1200,54 +1222,56 @@ class BioRadio:
         """
         Read a response directly (used before listener thread starts).
 
-        On macOS with Bluetooth serial, `in_waiting` can be unreliable,
-        so we also do a blocking `read(1)` using the serial port's own
-        timeout to ensure we catch incoming bytes.
+        The BioRadio SDK uses a single bidirectional stream — we read
+        from the SAME port we wrote to. On macOS BT serial, `in_waiting`
+        is unreliable, so we use blocking `read()` with the port's timeout.
         """
         deadline = time.monotonic() + timeout
         buf = bytearray()
 
-        # Which port(s) to read from
-        read_port = self._ser_in if self._ser_in else self._ser_out
+        # Read from the port we wrote to (single bidirectional stream).
+        # On Windows dual-port, responses come on ser_out; data on ser_in.
+        # On macOS single-port, both are the same object.
+        read_port = self._ser_out
 
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
 
-            # Method 1: check in_waiting (works well on Windows)
-            waiting = read_port.in_waiting
-            if waiting > 0:
-                chunk = read_port.read(waiting)
-                if chunk:
-                    buf.extend(chunk)
-                    logger.debug(f"RX ({len(chunk)} bytes): {chunk.hex(' ')}")
-            else:
-                # Method 2: blocking read with short timeout (critical for macOS BT)
-                # The serial port's own timeout (set in connect()) will limit the wait
-                old_timeout = read_port.timeout
-                read_port.timeout = min(0.5, remaining)
-                try:
-                    byte = read_port.read(1)
-                    if byte:
-                        buf.extend(byte)
-                        # Got a byte — read any remaining available data
-                        if read_port.in_waiting > 0:
-                            more = read_port.read(read_port.in_waiting)
+            # Set a short blocking timeout for read()
+            old_timeout = read_port.timeout
+            read_port.timeout = min(0.5, remaining)
+            try:
+                # Try to read one byte (blocks until byte arrives or timeout)
+                byte = read_port.read(1)
+                if byte:
+                    buf.extend(byte)
+                    # Got a byte — greedily read any more available data
+                    time.sleep(0.01)  # tiny delay to let more bytes arrive
+                    try:
+                        waiting = read_port.in_waiting
+                        if waiting > 0:
+                            more = read_port.read(waiting)
                             if more:
                                 buf.extend(more)
-                        logger.debug(f"RX ({len(buf)} bytes total): {buf.hex(' ')}")
-                finally:
-                    read_port.timeout = old_timeout
+                    except OSError:
+                        pass  # in_waiting not supported
+                    logger.debug(f"RX ({len(buf)} bytes total): {buf.hex(' ')}")
+            finally:
+                read_port.timeout = old_timeout
 
-            # Also check the other port if we have two distinct ports
-            if self._ser_out != self._ser_in and self._ser_out:
-                waiting2 = self._ser_out.in_waiting
-                if waiting2 > 0:
-                    chunk2 = self._ser_out.read(waiting2)
-                    if chunk2:
-                        buf.extend(chunk2)
-                        logger.debug(f"RX out-port ({len(chunk2)} bytes): {chunk2.hex(' ')}")
+            # Also check the input port if it's different (Windows dual-port)
+            if self._ser_in and self._ser_in != self._ser_out:
+                try:
+                    waiting2 = self._ser_in.in_waiting
+                    if waiting2 > 0:
+                        chunk2 = self._ser_in.read(waiting2)
+                        if chunk2:
+                            buf.extend(chunk2)
+                            logger.debug(f"RX in-port ({len(chunk2)} bytes): {chunk2.hex(' ')}")
+                except OSError:
+                    pass
 
             # Try to parse a response from accumulated bytes
             if buf:
@@ -1613,12 +1637,12 @@ Examples (Windows):
   python bioradio.py --in COM9 --out COM10 --lsl  # Stream to LSL
 
 Examples (macOS):
-  python bioradio.py --scan                                    # Scan for /dev/tty.* ports
-  python bioradio.py --in /dev/tty.BioRadioAYA                 # Connect (single port)
-  python bioradio.py --in /dev/tty.BioRadioAYA --info          # Print device info only
+  python bioradio.py --scan                                    # Scan for serial ports
+  python bioradio.py --in /dev/cu.BioRadioAYA                  # Connect (use cu.* not tty.*!)
+  python bioradio.py --in /dev/cu.BioRadioAYA --info           # Print device info only
 
 Tip: run --scan first to find your BioRadio's port name.
-     On macOS the device name (e.g. "AYA") appears in the port path as /dev/tty.BioRadioAYA.
+     On macOS, ALWAYS use /dev/cu.* (not /dev/tty.*) — tty blocks on carrier detect.
         """
     )
     parser.add_argument("--scan", action="store_true",
