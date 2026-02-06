@@ -44,7 +44,11 @@ from .emg_processing import (
 from .bioradio import (
     BioRadio,
     scan_for_bioradio,
+    find_bioradio_port,
+    probe_bioradio_port,
     create_lsl_outlet,
     DeviceConfig,
+    ChannelConfig,
     DataSample,
+    VALID_SAMPLE_RATES,
 )

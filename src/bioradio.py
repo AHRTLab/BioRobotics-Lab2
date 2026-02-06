@@ -4,7 +4,7 @@ bioradio.py - Pure Python/pyserial interface for the GLNeuroTech BioRadio device
 Replaces the .NET BioRadioSDK with a standalone Python implementation.
 Communicates via serial ports using the BioRadio's custom binary protocol.
 
-Cross-platform: Windows (COMx), macOS (/dev/tty.*, /dev/cu.*), Linux.
+Cross-platform: Windows (COMx), macOS (/dev/cu.*), Linux.
 
 Requirements:
     pip install pyserial
@@ -12,14 +12,15 @@ Requirements:
 Usage:
     from src.bioradio import BioRadio, scan_for_bioradio
 
-    # Auto-scan for device (works on Windows, macOS, Linux)
-    ports = scan_for_bioradio()
+    # Auto-detect (recommended — probes ports to find the BioRadio):
+    radio = BioRadio()
+    radio.connect()   # auto-scans & probes
 
-    # Connect with explicit ports
-    # Windows:
-    radio = BioRadio(port_in="COM9", port_out="COM10")
+    # Or specify a port explicitly:
+    # Windows  — use the LOWER COM port (e.g. COM9, NOT COM10):
+    radio = BioRadio(port="COM9")
     # macOS (use /dev/cu.* NOT /dev/tty.* — tty blocks on carrier detect!):
-    radio = BioRadio(port_in="/dev/cu.BioRadioAYA")
+    radio = BioRadio(port="/dev/cu.BioRadioAYA")
 
     radio.connect()
     config = radio.get_configuration()
@@ -219,6 +220,41 @@ class ChannelConfig:
 
         return ch
 
+    def to_bytes(self) -> bytes:
+        """Serialize channel config to bytes for SetParam ChannelConfig.
+
+        Returns 39 bytes: [ch_index(1)] [type_code(1)] [name(30)]
+                          [preset(2)] [flags(1)] [gain(1)] [op_mode(1)]
+                          [coupling(1)] [bit_res(1)]
+        """
+        buf = bytearray(39)
+        buf[0] = self.channel_index
+        buf[1] = int(self.type_code)
+
+        # Name: 30 bytes ASCII, null-padded
+        name_enc = self.name.encode("ascii", errors="replace")[:30]
+        buf[2:2 + len(name_enc)] = name_enc
+
+        # Preset code: big-endian uint16
+        buf[32] = (self.preset_code >> 8) & 0xFF
+        buf[33] = self.preset_code & 0xFF
+
+        # Flags byte
+        flags = 0
+        if self.enabled:    flags |= 0x80
+        if self.connected:  flags |= 0x40
+        if self.saved:      flags |= 0x20
+        if self.streamed:   flags |= 0x10
+        buf[34] = flags
+
+        # BioPotential-specific fields
+        buf[35] = self.gain
+        buf[36] = int(self.operation_mode)
+        buf[37] = int(self.coupling)
+        buf[38] = self.bit_resolution
+
+        return bytes(buf)
+
     def __repr__(self):
         status = "ON " if self.enabled else "OFF"
         return (f"Ch{self.channel_index:2d} [{status}] {self.type_code.name:14s} "
@@ -263,6 +299,15 @@ class DeviceConfig:
         cfg.config_flags = ConfigFlags(raw[16])
         cfg.frequency_multiplier = raw[17]
         return cfg
+
+    def to_bytes(self) -> bytes:
+        """Serialize global config to bytes for SetParam CommonDAQ.
+
+        Returns 18 bytes: [name(16)] [config_flags(1)] [freq_mult(1)]
+        """
+        name_enc = self.name.encode("ascii", errors="replace")[:16]
+        name_padded = name_enc.ljust(16, b"\x00")
+        return name_padded + bytes([int(self.config_flags), self.frequency_multiplier])
 
     @property
     def biopotential_channels(self) -> List[ChannelConfig]:
@@ -442,12 +487,24 @@ def scan_for_bioradio(verbose: bool = True,
     return candidates
 
 
-def probe_bioradio_port(port_name: str, timeout: float = 2.0) -> bool:
+def probe_bioradio_port(port_name: str, timeout: float = 2.0,
+                        verbose: bool = False) -> Optional[bytes]:
     """
     Attempt to open a port and send a GetGlobal command to see if a
-    BioRadio responds. Returns True if we get a valid response.
+    BioRadio responds.
 
-    Works on both Windows (COMx) and macOS (/dev/tty.*, /dev/cu.*).
+    The BioRadio uses a SINGLE bidirectional serial stream internally.
+    On Windows, Bluetooth creates two COM ports but only ONE of them
+    actually works for bidirectional communication (typically the lower-
+    numbered port, e.g. COM9 works, COM10 does not).
+
+    Args:
+        port_name: Serial port path (e.g. "COM9" or "/dev/cu.BioRadioAYA")
+        timeout:   Max seconds to wait for a response.
+        verbose:   Print debug info to stdout.
+
+    Returns:
+        Raw response bytes if the device responded, or None on failure.
     """
     try:
         ser = serial.Serial(
@@ -455,21 +512,112 @@ def probe_bioradio_port(port_name: str, timeout: float = 2.0) -> bool:
             baudrate=BAUD_RATE,
             timeout=timeout,
             write_timeout=timeout,
+            rtscts=False,
+            dsrdtr=False,
         )
+        if IS_MACOS:
+            ser.dtr = False
+            ser.rts = False
+
+        time.sleep(0.25)  # SDK's 250ms post-connect delay
+
+        # Drain any stale data
+        try:
+            if ser.in_waiting:
+                ser.read(ser.in_waiting)
+        except OSError:
+            pass
+
         # Send GetGlobal firmware version: F0 F1 00
         # Header = 0xF0 (GetGlobal) | 0x01 (len=1) = 0xF1
-        ser.write(bytes([SYNC_BYTE, 0xF1, 0x00]))
+        cmd = bytes([SYNC_BYTE, 0xF1, 0x00])
+        ser.write(cmd)
         ser.flush()
-        time.sleep(0.5)
 
-        # Try to read response
-        response = ser.read(ser.in_waiting or 64)
+        if verbose:
+            print(f"  [{port_name}] TX: {cmd.hex(' ')}")
+
+        # Read response with blocking read
+        response = bytearray()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ser.timeout = min(0.5, remaining)
+            byte = ser.read(1)
+            if byte:
+                response.extend(byte)
+                time.sleep(0.01)
+                try:
+                    waiting = ser.in_waiting
+                    if waiting > 0:
+                        response.extend(ser.read(waiting))
+                except OSError:
+                    pass
+                # Check if we have a complete response (sync + header + data)
+                if SYNC_BYTE in response and len(response) >= 3:
+                    break
+
         ser.close()
 
-        # Check if we got a sync byte back
-        return SYNC_BYTE in response
-    except (serial.SerialException, OSError):
-        return False
+        if verbose:
+            if response:
+                print(f"  [{port_name}] RX ({len(response)} bytes): {response.hex(' ')}")
+            else:
+                print(f"  [{port_name}] RX: no response")
+
+        if SYNC_BYTE in response and len(response) >= 3:
+            return bytes(response)
+        return None
+
+    except serial.SerialTimeoutException:
+        if verbose:
+            print(f"  [{port_name}] Write timeout (port not bidirectional)")
+        return None
+    except (serial.SerialException, OSError) as e:
+        if verbose:
+            print(f"  [{port_name}] Error: {e}")
+        return None
+
+
+def find_bioradio_port(verbose: bool = True) -> Optional[str]:
+    """
+    Scan for BioRadio ports and probe each one to find the working
+    bidirectional port.
+
+    On Windows, Bluetooth creates two COM ports (e.g. COM9 and COM10),
+    but only ONE actually works for two-way communication with the device.
+    This function probes each candidate to find the one that responds.
+
+    On macOS, there's typically a single /dev/cu.* port.
+
+    Args:
+        verbose: Print scanning and probing progress.
+
+    Returns:
+        The port path of the working BioRadio port, or None if not found.
+    """
+    candidates = scan_for_bioradio(verbose=verbose)
+    if not candidates:
+        return None
+
+    if verbose:
+        print(f"\n  Probing {len(candidates)} candidate(s) for BioRadio response...")
+
+    for port_name in candidates:
+        if verbose:
+            print(f"  Probing {port_name}...")
+        response = probe_bioradio_port(port_name, timeout=2.0, verbose=verbose)
+        if response is not None:
+            if verbose:
+                print(f"\n  [OK] BioRadio found on {port_name}!")
+            return port_name
+
+    if verbose:
+        print("\n  [FAIL] No BioRadio responded on any port.")
+        print("    Make sure the device is powered on and paired via Bluetooth.")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -764,44 +912,53 @@ class BioRadio:
     """
     Pure Python interface to the GLNeuroTech BioRadio.
 
-    Communicates via serial ports using pyserial. Supports the full
-    device protocol: connect, configure, acquire, parse data.
+    Communicates via a single bidirectional serial port using pyserial.
+    Supports the full device protocol: connect, configure, acquire, parse data.
+
+    The BioRadio SDK uses a SINGLE bidirectional stream internally. On
+    Windows, the BT driver exposes two COM ports (e.g. COM9 and COM10),
+    but only ONE of them is bidirectional — typically the lower-numbered
+    one (COM9). The other port (COM10) will timeout on writes.
 
     Cross-platform:
-        - Windows: port_in="COM9", port_out="COM10"  (two ports)
-        - macOS:   port="/dev/cu.BioRadioAYA"  (single bidirectional port)
+        - Windows: port="COM9"  (the bidirectional COM port)
+        - macOS:   port="/dev/cu.BioRadioAYA"
                    IMPORTANT: use /dev/cu.* NOT /dev/tty.* on macOS!
                    tty.* waits for carrier detect and will hang on BT serial.
-
-    The BioRadio SDK uses a SINGLE bidirectional stream internally.
-    On Windows, the BT driver exposes two COM ports, but on macOS
-    it's a single /dev/cu.* device.
+        - Auto:    port=None → auto-scan and probe to find working port.
 
     Args:
-        port_in:  Serial port for incoming data (device -> PC).
-                  Windows: "COM9"  /  macOS: "/dev/cu.BioRadioAYA"
-        port_out: Serial port for outgoing commands (PC -> device).
-                  If None, uses port_in for both directions.
-                  Windows: "COM10" /  macOS: same as port_in
+        port:     Serial port for bidirectional communication.
+                  If None, connect() will auto-detect via scanning + probing.
         baud:     Baud rate (default 460800)
     """
 
-    def __init__(self, port_in: Optional[str] = None,
-                 port_out: Optional[str] = None,
-                 baud: int = BAUD_RATE):
-        # Platform-aware defaults.
-        # On macOS, Bluetooth serial creates /dev/tty.* and /dev/cu.* ports.
-        # MUST use /dev/cu.* (call-out) — /dev/tty.* (call-in) blocks on
-        # carrier detect which hangs with Bluetooth serial.
-        # The SDK uses a single bidirectional stream, so one port for both.
-        if port_in is None:
-            port_in = "COM9" if IS_WINDOWS else "/dev/cu.BioRadioAYA"
-        if port_out is None:
-            port_out = "COM10" if IS_WINDOWS else port_in
-        self.port_in_name = port_in
-        self.port_out_name = port_out or port_in
+    def __init__(self, port: Optional[str] = None,
+                 baud: int = BAUD_RATE,
+                 # Legacy dual-port support (deprecated, use `port` instead)
+                 port_in: Optional[str] = None,
+                 port_out: Optional[str] = None):
+        # Handle legacy dual-port arguments for backwards compatibility.
+        # If someone passes port_in/port_out, use port_in as the primary port
+        # (since that's the one that proved to work in testing).
+        if port is None and port_in is not None:
+            port = port_in
+            if port_out is not None and port_out != port_in:
+                logger.warning(
+                    f"Dual-port mode is deprecated. The BioRadio uses a single "
+                    f"bidirectional port. Using port_in={port_in} as the primary "
+                    f"port. (port_out={port_out} will be ignored)"
+                )
+
+        self.port_name: Optional[str] = port
         self.baud = baud
 
+        # Keep legacy attributes for any code that references them
+        self.port_in_name = port
+        self.port_out_name = port
+
+        self._ser: Optional[serial.Serial] = None   # single bidirectional port
+        # Legacy aliases (both point to self._ser)
         self._ser_in: Optional[serial.Serial] = None
         self._ser_out: Optional[serial.Serial] = None
 
@@ -868,12 +1025,31 @@ class BioRadio:
     # Connection
     # ------------------------------------------------------------------
     def connect(self):
-        """Open serial ports and initialize the device."""
+        """
+        Open the serial port and initialize the device.
+
+        If no port was specified in the constructor, this will auto-scan
+        all serial ports and probe each one to find the BioRadio.
+        """
         if self._is_connected:
             logger.info("Already connected")
             return
 
-        logger.info(f"Connecting: IN={self.port_in_name}, OUT={self.port_out_name}")
+        # Auto-detect port if none specified
+        if self.port_name is None:
+            logger.info("No port specified — auto-detecting BioRadio...")
+            detected = find_bioradio_port(verbose=True)
+            if detected is None:
+                raise ConnectionError(
+                    "Could not auto-detect BioRadio. Make sure the device is "
+                    "powered on and paired via Bluetooth. Use BioRadio(port='COMx') "
+                    "to specify the port manually."
+                )
+            self.port_name = detected
+            self.port_in_name = detected
+            self.port_out_name = detected
+
+        logger.info(f"Connecting to BioRadio on {self.port_name}")
 
         # On macOS, Bluetooth serial needs slightly longer timeouts and
         # we should disable RTS/DTR toggling which can reset BT devices.
@@ -881,8 +1057,8 @@ class BioRadio:
         write_timeout = 1.0 if IS_MACOS else 0.5
 
         try:
-            self._ser_out = serial.Serial(
-                port=self.port_out_name,
+            self._ser = serial.Serial(
+                port=self.port_name,
                 baudrate=self.baud,
                 timeout=read_timeout,
                 write_timeout=write_timeout,
@@ -891,29 +1067,14 @@ class BioRadio:
             )
             # On macOS, don't toggle DTR/RTS as it can disrupt BT connection
             if IS_MACOS:
-                self._ser_out.dtr = False
-                self._ser_out.rts = False
+                self._ser.dtr = False
+                self._ser.rts = False
         except serial.SerialException as e:
-            raise ConnectionError(f"Cannot open output port {self.port_out_name}: {e}")
+            raise ConnectionError(f"Cannot open port {self.port_name}: {e}")
 
-        if self.port_in_name != self.port_out_name:
-            try:
-                self._ser_in = serial.Serial(
-                    port=self.port_in_name,
-                    baudrate=self.baud,
-                    timeout=read_timeout,
-                    write_timeout=write_timeout,
-                    rtscts=False,
-                    dsrdtr=False,
-                )
-                if IS_MACOS:
-                    self._ser_in.dtr = False
-                    self._ser_in.rts = False
-            except serial.SerialException as e:
-                self._ser_out.close()
-                raise ConnectionError(f"Cannot open input port {self.port_in_name}: {e}")
-        else:
-            self._ser_in = self._ser_out
+        # Legacy aliases — both point to the single bidirectional port
+        self._ser_in = self._ser
+        self._ser_out = self._ser
 
         # The .NET SDK does a 250ms sleep after opening the Bluetooth connection.
         # This gives the BT link time to stabilize before we send commands.
@@ -921,12 +1082,9 @@ class BioRadio:
 
         # Drain any stale data in the buffer
         try:
-            if self._ser_in.in_waiting:
-                stale = self._ser_in.read(self._ser_in.in_waiting)
-                logger.debug(f"Drained {len(stale)} stale bytes from input")
-            if self._ser_out != self._ser_in and self._ser_out.in_waiting:
-                stale = self._ser_out.read(self._ser_out.in_waiting)
-                logger.debug(f"Drained {len(stale)} stale bytes from output")
+            if self._ser.in_waiting:
+                stale = self._ser.read(self._ser.in_waiting)
+                logger.debug(f"Drained {len(stale)} stale bytes")
         except Exception:
             pass  # in_waiting may not be supported on all platforms
 
@@ -944,17 +1102,16 @@ class BioRadio:
                      f"(FW: {self.firmware_version}, HW: {self.hardware_version})")
 
     def disconnect(self):
-        """Stop acquisition if active, close serial ports."""
+        """Stop acquisition if active, close serial port."""
         if self._is_acquiring:
             self.stop_acquisition()
 
         self._stop_listener()
 
-        if self._ser_in and self._ser_in != self._ser_out:
-            self._ser_in.close()
-        if self._ser_out:
-            self._ser_out.close()
+        if self._ser:
+            self._ser.close()
 
+        self._ser = None
         self._ser_in = None
         self._ser_out = None
         self._is_connected = False
@@ -1046,6 +1203,142 @@ class BioRadio:
                 raw_voltage = (resp.data[5] << 8) | resp.data[6]
                 self.battery.voltage = raw_voltage * 0.00244
         return self.battery
+
+    # ------------------------------------------------------------------
+    # Configuration Writing
+    # ------------------------------------------------------------------
+    def set_sample_rate(self, rate: int) -> None:
+        """
+        Change the BioRadio sampling rate.
+
+        The device must be unlocked first, and not currently acquiring.
+        After writing, the config is re-read from the device to confirm.
+
+        Args:
+            rate: Desired sample rate in Hz.
+                  Valid values: 250, 500, 1000, 2000, 4000, 8000, 16000
+
+        Raises:
+            ValueError: If rate is not a valid sample rate.
+            RuntimeError: If the device is currently acquiring data.
+        """
+        if rate not in VALID_SAMPLE_RATES:
+            raise ValueError(
+                f"Invalid sample rate {rate}Hz. "
+                f"Valid rates: {VALID_SAMPLE_RATES}"
+            )
+        if self._is_acquiring:
+            raise RuntimeError(
+                "Cannot change sample rate while acquiring. "
+                "Call stop_acquisition() first."
+            )
+
+        # Make sure we have the current config
+        if self.config is None:
+            self.get_configuration()
+
+        old_rate = self.config.sample_rate
+        if old_rate == rate:
+            logger.info(f"Sample rate already {rate}Hz — no change needed")
+            return
+
+        logger.info(f"Changing sample rate: {old_rate}Hz -> {rate}Hz")
+
+        # Unlock, write, re-lock
+        was_locked = self._is_locked
+        if self._is_locked:
+            self.unlock_device()
+
+        # Update the local config object
+        self.config.sample_rate = rate
+
+        # Serialize and send: [ParamId.CommonDAQ] + config bytes
+        config_data = bytes([ParamId.CommonDAQ]) + self.config.to_bytes()
+        self._send_command_retry(DeviceCommand.SetParam, config_data)
+
+        logger.info(f"Wrote global config with rate={rate}Hz "
+                     f"(freq_mult={self.config.frequency_multiplier})")
+
+        # Re-lock if it was locked before
+        if was_locked:
+            self.lock_device()
+
+        # Re-read configuration to confirm the change took effect
+        self.get_configuration()
+        actual = self.config.sample_rate
+        if actual != rate:
+            logger.warning(
+                f"Sample rate verification: expected {rate}Hz, "
+                f"device reports {actual}Hz"
+            )
+        else:
+            logger.info(f"Sample rate confirmed: {actual}Hz")
+
+    def set_channel_config(self, channel: ChannelConfig) -> None:
+        """
+        Write a single channel's configuration to the device.
+
+        Args:
+            channel: ChannelConfig object with the desired settings.
+
+        Raises:
+            RuntimeError: If the device is currently acquiring data.
+        """
+        if self._is_acquiring:
+            raise RuntimeError(
+                "Cannot change channel config while acquiring. "
+                "Call stop_acquisition() first."
+            )
+
+        logger.info(f"Writing channel config: {channel}")
+
+        was_locked = self._is_locked
+        if self._is_locked:
+            self.unlock_device()
+
+        # Serialize: [ParamId.ChannelConfig] + channel bytes
+        ch_data = bytes([ParamId.ChannelConfig]) + channel.to_bytes()
+        self._send_command_retry(DeviceCommand.SetParam, ch_data)
+
+        if was_locked:
+            self.lock_device()
+
+        logger.info(f"Channel {channel.channel_index} config written")
+
+    def set_global_config(self, config: "DeviceConfig") -> None:
+        """
+        Write the full global DAQ configuration to the device.
+
+        This writes the global parameters (name, flags, frequency multiplier)
+        but NOT individual channel configs. Use set_channel_config() for those.
+
+        Args:
+            config: DeviceConfig object with the desired settings.
+
+        Raises:
+            RuntimeError: If the device is currently acquiring data.
+        """
+        if self._is_acquiring:
+            raise RuntimeError(
+                "Cannot change config while acquiring. "
+                "Call stop_acquisition() first."
+            )
+
+        logger.info(f"Writing global config: {config}")
+
+        was_locked = self._is_locked
+        if self._is_locked:
+            self.unlock_device()
+
+        config_data = bytes([ParamId.CommonDAQ]) + config.to_bytes()
+        self._send_command_retry(DeviceCommand.SetParam, config_data)
+
+        if was_locked:
+            self.lock_device()
+
+        # Update local copy
+        self.config = config
+        logger.info("Global config written")
 
     # ------------------------------------------------------------------
     # Device Lock / Unlock
@@ -1174,7 +1467,7 @@ class BioRadio:
         The SDK temporarily disables checksum for outgoing commands
         (SendDirectCommand sets usesChecksum=false before sending).
         """
-        if not self._ser_out or not self._ser_out.is_open:
+        if not self._ser or not self._ser.is_open:
             raise ConnectionError("Serial port not open")
 
         # Build packet without checksum (matches SDK SendDirectCommand)
@@ -1186,9 +1479,9 @@ class BioRadio:
         self._response_event.clear()
         self._last_response = None
 
-        # Send
-        self._ser_out.write(pkt)
-        self._ser_out.flush()
+        # Send on the single bidirectional port
+        self._ser.write(pkt)
+        self._ser.flush()
 
         # Wait for response (we need to read it ourselves if listener isn't running)
         if self._listener_thread is None or not self._listener_thread.is_alive():
@@ -1229,10 +1522,8 @@ class BioRadio:
         deadline = time.monotonic() + timeout
         buf = bytearray()
 
-        # Read from the port we wrote to (single bidirectional stream).
-        # On Windows dual-port, responses come on ser_out; data on ser_in.
-        # On macOS single-port, both are the same object.
-        read_port = self._ser_out
+        # Single bidirectional port — read from self._ser
+        read_port = self._ser
 
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -1260,18 +1551,6 @@ class BioRadio:
                     logger.debug(f"RX ({len(buf)} bytes total): {buf.hex(' ')}")
             finally:
                 read_port.timeout = old_timeout
-
-            # Also check the input port if it's different (Windows dual-port)
-            if self._ser_in and self._ser_in != self._ser_out:
-                try:
-                    waiting2 = self._ser_in.in_waiting
-                    if waiting2 > 0:
-                        chunk2 = self._ser_in.read(waiting2)
-                        if chunk2:
-                            buf.extend(chunk2)
-                            logger.debug(f"RX in-port ({len(chunk2)} bytes): {chunk2.hex(' ')}")
-                except OSError:
-                    pass
 
             # Try to parse a response from accumulated bytes
             if buf:
@@ -1354,26 +1633,30 @@ class BioRadio:
         self._listener_thread = None
 
     def _listener_loop(self):
-        """Background loop: read serial data and feed to parser."""
+        """Background loop: read serial data and feed to parser.
+
+        Before acquisition, command responses come WITHOUT checksums.
+        During acquisition, data packets come WITH checksums (and the
+        SDK toggled usesChecksum accordingly). We use _cmd_parser
+        (no checksum) when not acquiring, and _parser (with checksum)
+        during acquisition.
+        """
         logger.debug("Listener thread started")
         while not self._stop_event.is_set():
             try:
-                # Read from input port
-                if self._ser_in and self._ser_in.is_open:
-                    waiting = self._ser_in.in_waiting
+                # Read from the single bidirectional port
+                if self._ser and self._ser.is_open:
+                    waiting = self._ser.in_waiting
                     if waiting > 0:
-                        chunk = self._ser_in.read(min(waiting, 65536))
+                        chunk = self._ser.read(min(waiting, 65536))
                         if chunk:
-                            self._parser.feed(chunk)
-
-                # Also read from output port if different (responses come here)
-                if (self._ser_out and self._ser_out != self._ser_in
-                        and self._ser_out.is_open):
-                    waiting = self._ser_out.in_waiting
-                    if waiting > 0:
-                        chunk = self._ser_out.read(min(waiting, 65536))
-                        if chunk:
-                            self._parser.feed(chunk)
+                            # Use the appropriate parser based on mode:
+                            # - _cmd_parser (no checksum) for command responses
+                            # - _parser (with checksum) for streaming data
+                            if self._is_acquiring:
+                                self._parser.feed(chunk)
+                            else:
+                                self._cmd_parser.feed(chunk)
 
             except serial.SerialException as e:
                 logger.error(f"Serial error in listener: {e}")
@@ -1575,7 +1858,7 @@ class BioRadio:
 
     def __repr__(self):
         status = "ACQUIRING" if self._is_acquiring else "CONNECTED" if self._is_connected else "DISCONNECTED"
-        return f"BioRadio({self.port_out_name}, {status})"
+        return f"BioRadio({self.port_name or 'auto'}, {status})"
 
 
 # ---------------------------------------------------------------------------
@@ -1631,28 +1914,37 @@ def main():
         description="BioRadio Python Interface",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples (Windows):
-  python bioradio.py --scan                    # Scan for COM ports
-  python bioradio.py --in COM9 --out COM10     # Connect and acquire
-  python bioradio.py --in COM9 --out COM10 --lsl  # Stream to LSL
+Examples:
+  python bioradio.py --scan                        # Scan for serial ports
+  python bioradio.py                               # Auto-detect and connect
+  python bioradio.py --port COM9                   # Connect to specific port
+  python bioradio.py --port /dev/cu.BioRadioAYA    # macOS (use cu.* not tty.*!)
+  python bioradio.py --port COM9 --info            # Print device info only
+  python bioradio.py --port COM9 --lsl             # Stream to LSL
+  python bioradio.py --port COM9 --rate 500        # Set sample rate to 500Hz
+  python bioradio.py --port COM9 --rate 2000 --lsl # Set rate + stream to LSL
 
-Examples (macOS):
-  python bioradio.py --scan                                    # Scan for serial ports
-  python bioradio.py --in /dev/cu.BioRadioAYA                  # Connect (use cu.* not tty.*!)
-  python bioradio.py --in /dev/cu.BioRadioAYA --info           # Print device info only
+Valid sample rates: 250, 500, 1000, 2000, 4000, 8000, 16000 Hz
 
 Tip: run --scan first to find your BioRadio's port name.
      On macOS, ALWAYS use /dev/cu.* (not /dev/tty.*) — tty blocks on carrier detect.
+     On Windows, Bluetooth creates two COM ports — only ONE works (usually the lower one).
         """
     )
     parser.add_argument("--scan", action="store_true",
                         help="Scan for available serial ports")
+    parser.add_argument("--port", "-p", dest="port", default=None,
+                        help="Serial port (e.g. COM9 or /dev/cu.BioRadioAYA)")
+    # Legacy arguments (deprecated)
     parser.add_argument("--in", dest="port_in", default=None,
-                        help="Input serial port (e.g. COM9 or /dev/tty.AVA)")
+                        help=argparse.SUPPRESS)  # hidden, backwards compat
     parser.add_argument("--out", dest="port_out", default=None,
-                        help="Output serial port (e.g. COM10 or /dev/cu.AVA)")
+                        help=argparse.SUPPRESS)  # hidden, backwards compat
     parser.add_argument("--info", action="store_true",
                         help="Print device info and config, then exit")
+    parser.add_argument("--rate", type=int, default=None,
+                        choices=VALID_SAMPLE_RATES,
+                        help="Set sample rate in Hz (e.g. 250, 500, 1000, 2000)")
     parser.add_argument("--lsl", action="store_true",
                         help="Stream data to LSL")
     parser.add_argument("--duration", type=float, default=0,
@@ -1671,35 +1963,35 @@ Tip: run --scan first to find your BioRadio's port name.
 
     if args.scan:
         ports = scan_for_bioradio(verbose=True)
-        if not ports:
+        if ports:
+            print("\n  Probing candidates to find the working port...")
+            for p in ports:
+                resp = probe_bioradio_port(p, timeout=2.0, verbose=True)
+                if resp:
+                    print(f"\n  [OK] BioRadio responded on {p}!")
+                else:
+                    print(f"  [--] No response on {p}")
+        else:
             print("\nNo BioRadio candidates found.")
             print("Make sure the device is paired/plugged in.")
         return
 
-    if not args.port_in:
-        # Try auto-scan
-        print("No port specified. Scanning...")
-        ports = scan_for_bioradio(verbose=True)
-        if len(ports) >= 2:
-            args.port_in = ports[0]
-            args.port_out = ports[1]
-            print(f"\nAuto-selected: IN={args.port_in}, OUT={args.port_out}")
-        elif len(ports) == 1:
-            args.port_in = ports[0]
-            args.port_out = ports[0]
-            print(f"\nAuto-selected single port: {args.port_in}")
-        else:
-            print("\nCould not auto-detect ports. Use --in and --out flags.")
-            return
+    # Resolve port: explicit --port, or legacy --in, or auto-detect
+    port = args.port or args.port_in
+    # port=None means auto-detect (connect() will handle it)
 
-    radio = BioRadio(
-        port_in=args.port_in,
-        port_out=args.port_out or args.port_in
-    )
+    radio = BioRadio(port=port)
 
     try:
         radio.connect()
         config = radio.get_configuration()
+
+        # Apply sample rate change if requested
+        if args.rate is not None and args.rate != config.sample_rate:
+            print(f"\n  Changing sample rate: {config.sample_rate}Hz -> {args.rate}Hz ...")
+            radio.set_sample_rate(args.rate)
+            config = radio.config  # re-read after change
+            print(f"  Sample rate set to {config.sample_rate}Hz")
 
         print(f"\n{'='*60}")
         print(f"  Device: {radio.device_name}")

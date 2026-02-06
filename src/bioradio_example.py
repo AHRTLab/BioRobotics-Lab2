@@ -2,7 +2,7 @@
 bioradio_example.py - Student-friendly examples for using the BioRadio in Python.
 
 This script demonstrates how to:
-  1. Scan for the BioRadio serial ports (works on Windows AND macOS)
+  1. Scan for the BioRadio serial port (works on Windows AND macOS)
   2. Connect to the device
   3. Read configuration and battery status
   4. Acquire EMG/BioPotential data
@@ -12,9 +12,9 @@ This script demonstrates how to:
 No .NET SDK or BioCapture software required - just Python + pyserial!
 
 Usage:
-    python src/bioradio_example.py                             # auto-scan
-    python src/bioradio_example.py --in COM9 --out COM10       # Windows
-    python src/bioradio_example.py --in /dev/cu.BioRadioAYA     # macOS (use cu.* not tty.*!)
+    python src/bioradio_example.py                          # auto-detect
+    python src/bioradio_example.py --port COM9              # Windows
+    python src/bioradio_example.py --port /dev/cu.BioRadioAYA  # macOS (use cu.* not tty.*!)
 
 Requirements:
     pip install pyserial
@@ -30,7 +30,10 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.bioradio import BioRadio, scan_for_bioradio, create_lsl_outlet
+from src.bioradio import (
+    BioRadio, scan_for_bioradio, find_bioradio_port,
+    probe_bioradio_port, create_lsl_outlet,
+)
 
 
 # =====================================================================
@@ -39,29 +42,27 @@ from src.bioradio import BioRadio, scan_for_bioradio, create_lsl_outlet
 def example_scan():
     """
     Students may not know which COM port their BioRadio is on.
-    This scans all ports and identifies likely candidates.
+    This scans all ports and probes each one to find the working port.
     """
     print("\n" + "="*60)
-    print("  EXAMPLE 1: Scanning for BioRadio COM ports")
+    print("  EXAMPLE 1: Scanning for BioRadio ports")
     print("="*60)
 
-    ports = scan_for_bioradio(verbose=True)
+    port = find_bioradio_port(verbose=True)
 
-    if len(ports) >= 2:
-        print(f"  Suggested: port_in={ports[0]}, port_out={ports[1]}")
-    elif len(ports) == 1:
-        print(f"  Found 1 port: {ports[0]} (try using this for both in/out)")
+    if port:
+        print(f"\n  Use this port:  BioRadio(port='{port}')")
     else:
         print("  No BioRadio ports found!")
         print("  Make sure the device is powered on and paired/plugged in.")
 
-    return ports
+    return port
 
 
 # =====================================================================
 # Example 2: Connect and Read Device Info
 # =====================================================================
-def example_device_info(port_in=None, port_out=None):
+def example_device_info(port=None):
     """
     Connect to the BioRadio and print device information.
     """
@@ -69,7 +70,7 @@ def example_device_info(port_in=None, port_out=None):
     print("  EXAMPLE 2: Device Info")
     print("="*60)
 
-    radio = BioRadio(port_in=port_in, port_out=port_out)
+    radio = BioRadio(port=port)
 
     try:
         radio.connect()
@@ -111,7 +112,7 @@ def example_device_info(port_in=None, port_out=None):
 # =====================================================================
 # Example 3: Acquire Data for N Seconds
 # =====================================================================
-def example_acquire(port_in=None, port_out=None, duration=5.0):
+def example_acquire(port=None, duration=5.0):
     """
     Acquire BioPotential data for a specified duration and print stats.
     """
@@ -119,7 +120,7 @@ def example_acquire(port_in=None, port_out=None, duration=5.0):
     print(f"  EXAMPLE 3: Acquire Data ({duration}s)")
     print("="*60)
 
-    radio = BioRadio(port_in=port_in, port_out=port_out)
+    radio = BioRadio(port=port)
     all_samples = []
 
     try:
@@ -155,8 +156,7 @@ def example_acquire(port_in=None, port_out=None, duration=5.0):
 # =====================================================================
 # Example 4: Save Data to CSV
 # =====================================================================
-def example_save_csv(port_in=None, port_out=None,
-                     duration=5.0, filename="bioradio_data.csv"):
+def example_save_csv(port=None, duration=5.0, filename="bioradio_data.csv"):
     """
     Acquire data and save all BioPotential channels to a CSV file.
     """
@@ -164,7 +164,7 @@ def example_save_csv(port_in=None, port_out=None,
     print(f"  EXAMPLE 4: Save to CSV ({filename})")
     print("="*60)
 
-    radio = BioRadio(port_in=port_in, port_out=port_out)
+    radio = BioRadio(port=port)
 
     try:
         radio.connect()
@@ -221,7 +221,7 @@ def example_save_csv(port_in=None, port_out=None,
 # =====================================================================
 # Example 5: Real-time Callback
 # =====================================================================
-def example_callback(port_in=None, port_out=None, duration=3.0):
+def example_callback(port=None, duration=3.0):
     """
     Use a callback function to process each data packet in real-time.
     This is useful for real-time control applications.
@@ -243,7 +243,7 @@ def example_callback(port_in=None, port_out=None, duration=3.0):
                       f"Ch{first_ch_idx} = {vals[:3]}... "
                       f"Battery={sample.battery_voltage:.2f}V")
 
-    radio = BioRadio(port_in=port_in, port_out=port_out)
+    radio = BioRadio(port=port)
 
     try:
         radio.connect()
@@ -266,7 +266,7 @@ def example_callback(port_in=None, port_out=None, duration=3.0):
 # =====================================================================
 # Example 6: Stream to LSL
 # =====================================================================
-def example_lsl_stream(port_in=None, port_out=None, duration=10.0):
+def example_lsl_stream(port=None, duration=10.0):
     """
     Stream BioRadio data to the Lab Streaming Layer.
     Open the visualizer (src/visualizer.py) to see the data!
@@ -281,7 +281,7 @@ def example_lsl_stream(port_in=None, port_out=None, duration=10.0):
         print("  pylsl not installed! Run: pip install pylsl")
         return
 
-    radio = BioRadio(port_in=port_in, port_out=port_out)
+    radio = BioRadio(port=port)
 
     try:
         radio.connect()
@@ -333,10 +333,13 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="BioRadio Examples")
+    parser.add_argument("--port", "-p", default=None,
+                        help="Serial port (e.g. COM9 or /dev/cu.BioRadioAYA)")
+    # Legacy arguments (hidden, backwards compat)
     parser.add_argument("--in", dest="port_in", default=None,
-                        help="Input port (e.g. COM9 or /dev/cu.BioRadioAYA)")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--out", dest="port_out", default=None,
-                        help="Output port (e.g. COM10 or /dev/cu.AVA)")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--example", type=int, default=0,
                         choices=[0, 1, 2, 3, 4, 5, 6],
                         help="Run specific example (0=menu)")
@@ -344,31 +347,17 @@ if __name__ == "__main__":
                         help="Duration for acquisition examples (seconds)")
     args = parser.parse_args()
 
-    # Auto-detect ports if not specified
-    if not args.port_in:
-        ports = scan_for_bioradio(verbose=True)
-        if len(ports) >= 2:
-            args.port_in = ports[0]
-            args.port_out = ports[1]
-        elif len(ports) == 1:
-            args.port_in = ports[0]
-            args.port_out = ports[0]
-        else:
-            print("\nNo ports detected! Use --in and --out to specify manually.")
-            print("Windows: python bioradio_example.py --in COM9 --out COM10")
-            print("macOS:   python bioradio_example.py --in /dev/cu.BioRadioAYA")
-            sys.exit(1)
-
-    if args.port_out is None:
-        args.port_out = args.port_in
+    # Resolve port: explicit --port, or legacy --in, or auto-detect
+    port = args.port or args.port_in
+    # port=None means auto-detect (BioRadio.connect() handles it)
 
     examples = {
-        1: ("Scan COM ports",    lambda: example_scan()),
-        2: ("Device info",       lambda: example_device_info(args.port_in, args.port_out)),
-        3: ("Acquire data",      lambda: example_acquire(args.port_in, args.port_out, args.duration)),
-        4: ("Save to CSV",       lambda: example_save_csv(args.port_in, args.port_out, args.duration)),
-        5: ("Real-time callback", lambda: example_callback(args.port_in, args.port_out, args.duration)),
-        6: ("LSL streaming",     lambda: example_lsl_stream(args.port_in, args.port_out, args.duration)),
+        1: ("Scan for ports",      lambda: example_scan()),
+        2: ("Device info",         lambda: example_device_info(port)),
+        3: ("Acquire data",        lambda: example_acquire(port, args.duration)),
+        4: ("Save to CSV",         lambda: example_save_csv(port, args.duration)),
+        5: ("Real-time callback",  lambda: example_callback(port, args.duration)),
+        6: ("LSL streaming",       lambda: example_lsl_stream(port, args.duration)),
     }
 
     if args.example > 0:
@@ -377,7 +366,7 @@ if __name__ == "__main__":
         print("\n" + "="*60)
         print("  BioRadio Python Examples")
         print("="*60)
-        print(f"  Ports: IN={args.port_in}, OUT={args.port_out}\n")
+        print(f"  Port: {port or '(auto-detect)'}\n")
         for num, (name, _) in examples.items():
             print(f"  [{num}] {name}")
         print(f"  [0] Exit\n")
