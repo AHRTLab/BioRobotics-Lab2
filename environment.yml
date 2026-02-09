@@ -44,6 +44,9 @@ dependencies:
   - pyyaml>=6.0
   - tqdm>=4.65
   - click>=8.1   # CLI tools
+ 
+  - pygame>=2.5
+
   
   # Pip-only packages
   - pip:

@@ -110,6 +110,7 @@ Unlike EMG which has high-frequency content, EOG signals are predominantly low-f
 | `src/bioradio.py` | Pure Python interface for the BioRadio device |
 | `src/bioradio_lsl_bridge.py` | LSL network bridge for streaming BioRadio data across machines |
 | `src/visualizer.py` | Real-time EOG visualization and data collection GUI |
+| `src/eog_gaze_control.py` | Interactive gaze control demo with calibration and target game |
 | `notebooks/Lab2_EOG_Analysis.ipynb` | Jupyter notebook for data analysis (PCA, ICA, SVM) |
 | `environment.yml` | Conda environment specification |
 
@@ -435,7 +436,90 @@ Train and evaluate Support Vector Machine classifiers:
 
 ---
 
-## Part 6: Discussion Questions
+## Part 6: Gaze Control Demo
+
+After completing data collection and analysis, try the interactive gaze control demo to see EOG-based control in action!
+
+### 6.1 Running the Demo
+
+The gaze control demo provides a visual, interactive way to experience EOG-based cursor control:
+
+```bash
+conda activate biorobotics
+
+# Option 1: Use LSL stream (recommended - run the LSL bridge first)
+python src/bioradio_lsl_bridge.py  # In one terminal
+python src/eog_gaze_control.py     # In another terminal
+
+# Option 2: Direct BioRadio connection
+python src/eog_gaze_control.py --port COM9  # Windows
+python src/eog_gaze_control.py --port /dev/tty.BioRadioAYA  # macOS
+
+# Option 3: Test without hardware (uses mouse to simulate)
+python src/eog_gaze_control.py --simulate
+```
+
+### 6.2 Demo Features
+
+| Feature | Description |
+|---------|-------------|
+| **Cursor Control** | HEOG moves cursor left/right, VEOG moves up/down |
+| **5-Point Calibration** | Calibrate center, left, right, up, down positions |
+| **Blink Detection** | Large VEOG spikes are detected as "clicks" |
+| **Target Game** | Hit targets by dwelling (gaze) or blinking |
+| **Signal Display** | Real-time HEOG/VEOG traces in the corner |
+| **Adjustable Smoothing** | Toggle cursor smoothing on/off |
+
+### 6.3 Controls
+
+| Key | Action |
+|-----|--------|
+| **SPACE** | Start/restart calibration |
+| **G** | Toggle game mode (hit targets) |
+| **S** | Toggle cursor smoothing |
+| **R** | Reset calibration |
+| **ESC** or **Q** | Quit |
+
+### 6.4 Calibration Procedure
+
+1. Press **SPACE** to start calibration
+2. Follow the on-screen instructions:
+   - Look at the **CENTER** target for 2 seconds
+   - Look **LEFT** for 2 seconds
+   - Look **RIGHT** for 2 seconds
+   - Look **UP** for 2 seconds
+   - Look **DOWN** for 2 seconds
+3. The demo will automatically compute calibration parameters
+
+### 6.5 Game Mode
+
+Press **G** to enter game mode:
+
+- Orange targets appear on screen
+- Move your gaze to the target
+- **Dwell** on the target for 0.5 seconds OR **blink** to "hit" it
+- Score increases with each target hit
+- New targets appear automatically
+
+This demonstrates how EOG can be used for assistive technology interfaces!
+
+### 6.6 Command Line Options
+
+```bash
+python src/eog_gaze_control.py --help
+
+Options:
+  --port PORT        Serial port for direct BioRadio connection
+  --simulate         Simulate EOG with mouse (for testing)
+  --lsl-stream NAME  Name of LSL stream to connect to (default: BioRadio)
+  --fullscreen       Run in fullscreen mode
+  --width WIDTH      Window width (default: 1024)
+  --height HEIGHT    Window height (default: 768)
+```
+
+---
+
+## Part 7: Discussion Questions
 
 Answer these questions in your lab report:
 
