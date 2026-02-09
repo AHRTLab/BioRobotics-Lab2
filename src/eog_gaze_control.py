@@ -45,7 +45,7 @@ except ImportError:
 
 # Try to import pylsl for LSL streaming
 try:
-    from pylsl import StreamInlet, resolve_stream
+    from pylsl import StreamInlet, resolve_streams as lsl_resolve_streams
     LSL_AVAILABLE = True
 except ImportError:
     LSL_AVAILABLE = False
@@ -468,20 +468,11 @@ class DataSource:
 
 class LSLDataSource(DataSource):
     """Receive EOG data from LSL stream."""
-    
-    def __init__(self, stream_name: str = "BioRadio"):
-        print(f"Looking for LSL stream '{stream_name}'...")
-        streams = resolve_stream('name', stream_name, timeout=5.0)
-        
-        if not streams:
-            # Try any EOG stream
-            streams = resolve_stream('type', 'EOG', timeout=5.0)
-        
-        if not streams:
-            raise RuntimeError("No LSL stream found! Make sure the BioRadio LSL bridge is running.")
-        
-        self.inlet = StreamInlet(streams[0])
-        print(f"Connected to LSL stream: {streams[0].name()}")
+
+    def __init__(self, stream_info):
+        """Create from a pylsl StreamInfo object (as returned by resolve_streams)."""
+        self.inlet = StreamInlet(stream_info)
+        print(f"Connected to LSL stream: {stream_info.name()}")
     
     def get_sample(self) -> Optional[Tuple[float, float]]:
         sample, timestamp = self.inlet.pull_sample(timeout=0.0)
@@ -559,6 +550,153 @@ class BioRadioDataSource(DataSource):
 
 
 # =============================================================================
+# Stream Browser (LSL stream selection UI)
+# =============================================================================
+class StreamBrowser:
+    """Pygame UI for discovering and selecting an LSL stream."""
+
+    def __init__(self, screen, fonts):
+        self.screen = screen
+        self.font_large, self.font_medium, self.font_small = fonts
+        self.width = screen.get_width()
+        self.height = screen.get_height()
+        self.clock = pygame.time.Clock()
+
+        self.streams = []           # list of StreamInfo
+        self.selected_idx = None    # index of highlighted stream
+        self.scanning = False
+        self.scan_thread = None
+        self.status_msg = "Press  Scan  to search for LSL streams"
+
+    # -- background scan ---------------------------------------------------
+    def _scan_worker(self):
+        try:
+            found = lsl_resolve_streams(wait_time=2.0)
+            self.streams = found
+            if found:
+                self.status_msg = f"Found {len(found)} stream(s). Click one then press Connect."
+                self.selected_idx = 0
+            else:
+                self.status_msg = "No streams found. Make sure your device is streaming."
+        except Exception as e:
+            self.status_msg = f"Scan error: {e}"
+        self.scanning = False
+
+    def start_scan(self):
+        if self.scanning:
+            return
+        self.scanning = True
+        self.streams = []
+        self.selected_idx = None
+        self.status_msg = "Scanning..."
+        self.scan_thread = threading.Thread(target=self._scan_worker, daemon=True)
+        self.scan_thread.start()
+
+    # -- button helpers ----------------------------------------------------
+    @staticmethod
+    def _point_in_rect(pos, rect):
+        return rect[0] <= pos[0] <= rect[0] + rect[2] and rect[1] <= pos[1] <= rect[1] + rect[3]
+
+    def _draw_button(self, text, rect, enabled=True):
+        color = Colors.ORANGE if enabled else Colors.DARK_GRAY
+        pygame.draw.rect(self.screen, color, rect, border_radius=6)
+        pygame.draw.rect(self.screen, Colors.BLACK, rect, 2, border_radius=6)
+        label = self.font_medium.render(text, True, Colors.WHITE if enabled else Colors.LIGHT_GRAY)
+        label_rect = label.get_rect(center=(rect[0] + rect[2] // 2, rect[1] + rect[3] // 2))
+        self.screen.blit(label, label_rect)
+
+    # -- main loop ---------------------------------------------------------
+    def run(self):
+        """Run the stream browser. Returns a StreamInfo or None (user quit)."""
+        # Button rects
+        btn_w, btn_h = 160, 44
+        scan_rect = (self.width // 2 - btn_w - 20, self.height - 80, btn_w, btn_h)
+        connect_rect = (self.width // 2 + 20, self.height - 80, btn_w, btn_h)
+        sim_rect = (self.width // 2 - btn_w // 2, self.height - 130, btn_w, btn_h)
+
+        # Kick off an initial scan automatically
+        self.start_scan()
+
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                        return None
+                    if event.key == pygame.K_RETURN and self.selected_idx is not None:
+                        return self.streams[self.selected_idx]
+                    if event.key == pygame.K_UP and self.selected_idx is not None and self.selected_idx > 0:
+                        self.selected_idx -= 1
+                    if event.key == pygame.K_DOWN and self.selected_idx is not None and self.selected_idx < len(self.streams) - 1:
+                        self.selected_idx += 1
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    pos = event.pos
+                    # Scan button
+                    if self._point_in_rect(pos, scan_rect) and not self.scanning:
+                        self.start_scan()
+                    # Connect button
+                    if self._point_in_rect(pos, connect_rect) and self.selected_idx is not None:
+                        return self.streams[self.selected_idx]
+                    # Simulate button
+                    if self._point_in_rect(pos, sim_rect):
+                        return "SIMULATE"
+                    # Click on a stream row
+                    for i, row_rect in enumerate(self._row_rects):
+                        if self._point_in_rect(pos, row_rect):
+                            self.selected_idx = i
+
+            # -- draw --
+            self.screen.fill(Colors.WHITE)
+
+            # Title
+            title = self.font_large.render("LSL Stream Browser", True, Colors.ORANGE)
+            self.screen.blit(title, title.get_rect(center=(self.width // 2, 40)))
+
+            # Status
+            status = self.font_small.render(self.status_msg, True, Colors.DARK_GRAY)
+            self.screen.blit(status, status.get_rect(center=(self.width // 2, 80)))
+
+            # Stream list
+            self._row_rects = []
+            list_x = 80
+            list_y = 110
+            row_h = 50
+            row_w = self.width - 160
+            for i, s in enumerate(self.streams):
+                rect = (list_x, list_y + i * (row_h + 4), row_w, row_h)
+                self._row_rects.append(rect)
+                bg = Colors.ORANGE if i == self.selected_idx else Colors.LIGHT_GRAY
+                pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+                pygame.draw.rect(self.screen, Colors.DARK_GRAY, rect, 1, border_radius=4)
+                text_color = Colors.WHITE if i == self.selected_idx else Colors.BLACK
+                line1 = self.font_medium.render(s.name(), True, text_color)
+                line2 = self.font_small.render(
+                    f"Type: {s.type()}   Channels: {s.channel_count()}   Rate: {s.nominal_srate():.0f} Hz",
+                    True, text_color)
+                self.screen.blit(line1, (rect[0] + 12, rect[1] + 4))
+                self.screen.blit(line2, (rect[0] + 12, rect[1] + 28))
+
+            # Scanning indicator
+            if self.scanning:
+                dots = "." * (int(time.time() * 3) % 4)
+                scanning_text = self.font_medium.render(f"Scanning{dots}", True, Colors.DARK_GRAY)
+                self.screen.blit(scanning_text, scanning_text.get_rect(center=(self.width // 2, list_y + 10)))
+
+            # Buttons
+            self._draw_button("Scan", scan_rect, enabled=not self.scanning)
+            self._draw_button("Connect", connect_rect, enabled=self.selected_idx is not None)
+            self._draw_button("Simulate", sim_rect, enabled=True)
+
+            # Help text
+            help_text = self.font_small.render("Arrow keys to select  |  Enter to connect  |  ESC to quit", True, Colors.DARK_GRAY)
+            self.screen.blit(help_text, help_text.get_rect(center=(self.width // 2, self.height - 20)))
+
+            pygame.display.flip()
+            self.clock.tick(30)
+
+
+# =============================================================================
 # Main Application
 # =============================================================================
 class GazeControlApp:
@@ -567,11 +705,15 @@ class GazeControlApp:
     def __init__(self, config: Config, data_source: DataSource):
         self.config = config
         self.data_source = data_source
-        
-        # Initialize pygame
-        pygame.init()
-        
-        if config.fullscreen:
+
+        # Initialize pygame (reuse existing display if already created)
+        if not pygame.get_init():
+            pygame.init()
+
+        existing = pygame.display.get_surface()
+        if existing is not None:
+            self.screen = existing
+        elif config.fullscreen:
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
             config.window_width = self.screen.get_width()
             config.window_height = self.screen.get_height()
@@ -986,6 +1128,8 @@ Examples:
     )
     
     # Create data source
+    data_source = None
+
     if args.simulate:
         print("Running in simulation mode (use mouse to control)")
         data_source = SimulatedDataSource(config.window_width, config.window_height)
@@ -997,11 +1141,42 @@ Examples:
             print("Install with: pip install pylsl")
             print("Or use --simulate for testing, or --port for direct connection")
             sys.exit(1)
-        data_source = LSLDataSource(args.lsl_stream)
-    
+
+        # Show stream browser UI
+        pygame.init()
+        if config.fullscreen:
+            screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            config.window_width = screen.get_width()
+            config.window_height = screen.get_height()
+        else:
+            screen = pygame.display.set_mode(
+                (config.window_width, config.window_height)
+            )
+        pygame.display.set_caption("EOG Gaze Control - Stream Browser")
+        fonts = (
+            pygame.font.Font(None, 48),
+            pygame.font.Font(None, 32),
+            pygame.font.Font(None, 24),
+        )
+
+        browser = StreamBrowser(screen, fonts)
+        result = browser.run()
+
+        if result is None:
+            pygame.quit()
+            print("Cancelled.")
+            sys.exit(0)
+        elif result == "SIMULATE":
+            data_source = SimulatedDataSource(config.window_width, config.window_height)
+        else:
+            data_source = LSLDataSource(result)
+
+        # Hand the already-created screen to GazeControlApp
+        pygame.display.set_caption("EOG Gaze Control Demo")
+
     # Run application
     app = GazeControlApp(config, data_source)
-    
+
     print("\n" + "="*50)
     print("EOG Gaze Control Demo")
     print("="*50)
@@ -1010,7 +1185,7 @@ Examples:
     print("Press S to toggle smoothing")
     print("Press ESC to quit")
     print("="*50 + "\n")
-    
+
     try:
         app.run()
     except KeyboardInterrupt:
