@@ -1,4 +1,4 @@
-# Lab 1: Introduction to EMG and the Myo Armband
+# Lab 2: Introduction to EOG and the BioRadio
 
 **BioRobotics**  
 **Duration:** 2-3 hours  
@@ -8,7 +8,7 @@
 
 ## Abstract
 
-The goal of this lab is to introduce students to biopotentials and how they can be recorded using the Myo Armband. This experiment includes real-time visualization, data collection, and analysis of electromyograms (EMG) and inertial measurement unit (IMU) data. Students will learn how to stream biosignal data using the Lab Streaming Layer (LSL) protocol, collect gesture data, and apply machine learning techniques for gesture classification.
+The goal of this lab is to introduce students to electrooculography (EOG) and how eye movement signals can be recorded using the BioRadio wireless biosignal acquisition system. This experiment includes real-time visualization, data collection, and analysis of EOG signals for gaze direction classification. Students will learn how to stream biosignal data using the Lab Streaming Layer (LSL) protocol, collect labeled gaze data, and apply machine learning techniques including Principal Component Analysis (PCA), Independent Component Analysis (ICA), and Support Vector Machines (SVM) for gaze classification.
 
 **Please read through the entire document before beginning the lab.**
 
@@ -18,57 +18,88 @@ The goal of this lab is to introduce students to biopotentials and how they can 
 
 By the end of this lab, students will be able to:
 
-1. **Understand EMG Signals** - Explain how muscle contractions generate electrical signals and how they can be measured
-2. **Set Up LSL Streaming** - Configure and run real-time biosignal streaming from the Myo Armband
-3. **Collect Gesture Data** - Record labeled EMG and IMU data for multiple gestures with proper experimental protocol
-4. **Visualize Biosignals** - Interpret real-time EMG waveforms and understand signal characteristics
-5. **Apply Basic Signal Processing** - Understand rectification, filtering, and envelope extraction
-6. **Perform Gesture Classification** - Use LDA, QDA, and K-means algorithms to classify gestures from EMG features
+1. **Understand EOG Signals** - Explain how eye movements generate electrical potentials and how they can be measured using surface electrodes
+2. **Set Up the BioRadio** - Configure and connect to the BioRadio device for biosignal acquisition
+3. **Apply Proper Electrode Placement** - Position EOG electrodes correctly for horizontal and vertical eye movement detection
+4. **Collect Gaze Data** - Record labeled EOG data for multiple gaze directions with proper experimental protocol
+5. **Visualize EOG Signals** - Interpret real-time EOG waveforms and understand signal characteristics
+6. **Apply Signal Processing** - Implement baseline correction, filtering, and artifact removal for EOG signals
+7. **Perform Dimensionality Reduction** - Apply PCA and ICA to understand EOG signal components
+8. **Classify Gaze Directions** - Use SVM classifiers (linear and RBF kernels) to classify gaze from EOG features
 
 ---
 
 ## Background
 
-### The Human Electrical System
+### The Electrooculogram (EOG)
 
-The human body is a complex system that includes mechanical, electrical, and chemical components. The electrical system consists of electrical potentials that propagate along nerve cells and muscle fibers. Brain functions, muscle movements, and eye movements are all invoked by these electrical potentials. 
+The eye functions as an electrical dipole, with the cornea (front of the eye) being positively charged relative to the retina (back of the eye). This **corneo-retinal potential** is approximately 0.4 to 1.0 mV and remains relatively constant during light and dark conditions.
 
-Physiological potentials arise from the ionic currents that flow in and out of nerve and muscle cells. These **biopotentials** can be measured using electrodes in combination with electronic instrumentation, providing insight into how different systems within the body are functioning.
+When the eye rotates, the orientation of this dipole changes, creating measurable voltage differences at electrodes placed around the eye. This is the basis of **electrooculography (EOG)**.
 
-### EMG Signals
+Key EOG characteristics:
+* **Frequency range:** DC to 30 Hz (much lower than EMG)
+* **Amplitude range:** 15-200 μV per degree of eye movement
+* **Signal type:** Quasi-DC (slow changes with sustained gaze positions)
+* **Typical eye movement speed:** Saccades can reach 500°/s
 
-There are three categories of muscles in the body: cardiac, smooth, and skeletal muscles. This lab focuses on **skeletal muscles** — the muscles attached to bones that are under voluntary control.
+### Types of Eye Movements
 
-Muscles attach to bones via tendons. During a muscle contraction, the tendon pulls the bone and movement occurs. Muscle contraction is invoked by an **action potential**, which can be measured with electrodes on the surface of the skin. The measurement of these action potentials is called an **electromyogram (EMG)**.
+1. **Saccades** - Rapid, ballistic eye movements between fixation points (20-200 ms duration)
+2. **Smooth pursuit** - Slow tracking movements following a moving target
+3. **Fixations** - Periods of stable gaze on a target
+4. **Blinks** - Eyelid closures that create characteristic artifacts in EOG
 
-Key EMG characteristics:
-- **Frequency range:** 2–500 Hz
-- **Amplitude range:** 50 μV – 5 mV
-- **Action potential duration:** 1-3 milliseconds (average)
-- **Muscle contraction duration:** 10-100 milliseconds (average)
-- **Typical contraction frequencies:** 8–25 Hz
+### EOG Electrode Placement
 
-A single action potential causes a **twitch**. Rapid twitches create a **tetanus response**:
-- **Unfused tetanus:** Individual twitches are still noticeable
-- **Fused tetanus:** Individual twitches can no longer be distinguished
+EOG uses a **2-channel bipolar configuration** to capture horizontal and vertical eye movements:
 
-### EMG Signal Processing
+**Channel 1: Horizontal EOG (HEOG)**
+- Electrodes placed at the outer canthi (outer corners) of both eyes
+- Right eye outer canthus (+) and left eye outer canthus (−)
+- Detects left/right eye movements
 
-Movement artifacts in EMG are generally lower in frequency and can be attenuated with a high-pass filter. Common processing methods include:
+**Channel 2: Vertical EOG (VEOG)**  
+- Electrodes placed above and below one eye (typically the right eye)
+- Above the eye (+) and below the eye (−)
+- Detects up/down movements and blinks
 
-1. **Rectification** - Take the absolute value of the signal
-2. **Envelope extraction** - Low-pass filter the rectified signal to get the muscle activation level
-3. **RMS power** - Calculate the root mean squared power of the waveform
-4. **Frequency analysis** - Examine the power spectral density
+**Ground/Reference Electrode**
+- Placed on the forehead (center) or behind the ear (mastoid)
+- Provides a stable reference potential
 
-### The Myo Armband
+```
+        ┌─────────────────────────────────────┐
+        │            FOREHEAD                  │
+        │              (GND)                   │
+        │                ●                     │
+        │                                      │
+        │    ┌─────┐           ┌─────┐        │
+        │    │     │    ●      │     │        │  ← VEOG+ (above eye)
+        │    │  L  │   NOSE    │  R  │        │
+        │ ●──│ EYE │           │ EYE │──●     │  ← HEOG electrodes
+        │    │     │           │     │        │     (outer canthi)
+        │    └─────┘           └─────┘        │
+        │                ●                     │  ← VEOG- (below eye)
+        └─────────────────────────────────────┘
+```
 
-The Myo Armband is an off-the-shelf device that collects surface EMG (sEMG) and IMU data from the forearm. It contains:
+### EOG Signal Processing
 
-- **8 EMG sensors** arranged in a ring around the forearm (200 Hz sampling rate)
-- **9-axis IMU** including accelerometer, gyroscope, and orientation data (50 Hz sampling rate)
+Unlike EMG which has high-frequency content, EOG signals are predominantly low-frequency:
 
-The 8 EMG channels capture muscle activity from different regions of the forearm, allowing discrimination between various hand gestures.
+1. **DC Offset Removal / Baseline Correction** - EOG signals have significant DC components that drift over time
+2. **Low-pass Filtering** - Cutoff around 30 Hz removes high-frequency noise while preserving eye movement information
+3. **Blink Detection** - Blinks create large, characteristic artifacts in VEOG that must be detected and either removed or used as a control signal
+4. **Saccade Detection** - Identify rapid eye movements by detecting velocity peaks
+
+### Applications of EOG
+
+* **Assistive Technology** - Eye-controlled interfaces for individuals with motor disabilities
+* **Drowsiness Detection** - Monitoring eye closure patterns for driver alertness systems
+* **Sleep Studies** - Detecting REM (rapid eye movement) sleep stages
+* **Human-Computer Interaction** - Gaze-based control systems
+* **Virtual Reality** - Eye tracking for foveated rendering
 
 ---
 
@@ -76,12 +107,10 @@ The 8 EMG channels capture muscle activity from different regions of the forearm
 
 | File | Description |
 |------|-------------|
-| `src/myo_interface.py` | Streams EMG and IMU data from Myo to LSL |
-| `src/visualizer.py` | Real-time visualization and data collection GUI |
-| `src/proportional_control.py` | Demonstrates EMG-based proportional control |
-| `src/bioradio.py` | Pure Python interface for the GLNeuroTech BioRadio device |
+| `src/bioradio.py` | Pure Python interface for the BioRadio device |
 | `src/bioradio_lsl_bridge.py` | LSL network bridge for streaming BioRadio data across machines |
-| `Lab1_EMG_Analysis.ipynb` | Jupyter notebook for data analysis (LDA, QDA, K-means) |
+| `src/visualizer.py` | Real-time EOG visualization and data collection GUI |
+| `notebooks/Lab2_EOG_Analysis.ipynb` | Jupyter notebook for data analysis (PCA, ICA, SVM) |
 | `environment.yml` | Conda environment specification |
 
 ---
@@ -102,7 +131,7 @@ Open a terminal (Anaconda Prompt on Windows) and run:
 
 ```bash
 # Navigate to the lab folder
-cd path/to/biorobotics_lab1
+cd path/to/BioRobotics-Lab2
 
 # Create the environment
 conda env create -f environment.yml
@@ -118,231 +147,156 @@ conda create -n biorobotics python=3.11
 conda activate biorobotics
 pip install numpy pandas scipy matplotlib scikit-learn
 pip install pylsl PyQt6 pyqtgraph
-pip install dl-myo
+pip install pyserial
 pip install jupyter
 ```
 
 ### 1.3 Verify Installation
 
 ```bash
-python -c "import pylsl; import myo; print('All packages installed!')"
+python -c "import pylsl; import serial; print('All packages installed!')"
 ```
 
 ---
 
-## Part 2: Finding and Selecting Your Myo Device
+## Part 2: BioRadio Setup
 
-In a classroom setting with multiple Myo armbands, you need to identify and connect to the correct device. This section shows you how to scan for available Myos, identify yours by making it vibrate, and connect to it.
+The BioRadio is a wireless biosignal acquisition device that connects via Bluetooth. Platform support varies:
 
-### 2.1 Interactive Device Selection (Recommended)
+### 2.1 Windows Setup (Recommended)
 
-The easiest way to find and connect to your Myo is using interactive mode:
+The BioRadio works natively on Windows via Bluetooth Serial Port Profile (SPP):
+
+1. **Power on the BioRadio** - Press and hold the power button until the LED flashes
+2. **Pair via Bluetooth** - Go to Windows Settings > Bluetooth & Devices > Add device
+3. **Find the COM port** - Open Device Manager > Ports (COM & LPT)
+   - The BioRadio creates TWO COM ports (e.g., COM9 and COM10)
+   - **Use the LOWER numbered port** (e.g., COM9)
+
+**Test the connection:**
 
 ```bash
 conda activate biorobotics
-cd path/to/biorobotics_lab1
-python src/myo_interface.py --select
+python src/bioradio.py --scan
 ```
 
-You'll see output like this:
+This will scan for serial ports and identify the BioRadio.
 
-```
-==================================================
-Myo Device Selection
-==================================================
+### 2.2 macOS Setup (Requires Workaround)
 
-Scanning for Myo devices (5.0s)...
-----------------------------------------
-  [1] Myo
-      MAC: D2:3B:85:94:32:8E
-      Signal: -65 dBm
-  [2] Myo
-      MAC: A1:B2:C3:D4:E5:F6
-      Signal: -72 dBm
-----------------------------------------
-Found 2 Myo device(s)
+> ⚠️ **Important:** macOS Sonoma (14+) has a known limitation with Bluetooth Serial Port Profile (SPP) that prevents direct connection to the BioRadio. The serial port `/dev/cu.BioRadioAYA` may appear but will not carry data.
 
-Options:
-  [1-2] Select a Myo by number
-  [p #]  Ping a Myo (e.g., 'p 1' to ping device 1)
-  [r]    Rescan for devices
-  [q]    Quit
+**Recommended Solution: Parallels Desktop + USB Bluetooth Adapter**
 
-Your choice: 
-```
+1. **Install Parallels Desktop** with a Windows 11 VM
+2. **Get a USB Bluetooth adapter** (any standard USB BT 4.0+ dongle, ~$10-15)
+3. **Plug in the USB adapter** and pass it through to the Windows VM:
+   - In Parallels: Devices > USB & Bluetooth > Select your USB BT adapter
+4. **Pair the BioRadio** in the Windows VM's Bluetooth settings
+5. **Run the BioRadio code** inside the Windows VM
 
-**To identify which Myo is yours:**
+> **Why is a USB adapter required?** The Mac's built-in Bluetooth is managed by macOS, which cannot establish the RFCOMM data channel the BioRadio needs. A USB adapter passed through to the VM lets Windows manage Bluetooth directly.
 
-1. Type `p 1` and press Enter to ping device 1
-2. **The Myo will vibrate twice** if it's reachable
-3. If that wasn't your Myo, try `p 2` for the next one
-4. Once you find yours, enter its number (e.g., `1`) to select it
-5. The stream will start automatically
+**Alternative: LSL Network Bridge**
 
-### 2.2 Scan for Devices
-
-To just see what Myos are available without connecting:
+If you have a separate Windows machine, stream BioRadio data to the Mac over the network:
 
 ```bash
-python src/myo_interface.py --scan
+# On Windows (where BioRadio is paired):
+python src/bioradio_lsl_bridge.py --send --port COM9
+
+# On Mac (receives data over the network):
+python src/bioradio_lsl_bridge.py --receive
 ```
 
-Output:
-```
-Scanning for Myo devices (5.0s)...
-----------------------------------------
-  [1] Myo
-      MAC: D2:3B:85:94:32:8E
-      Signal: -65 dBm
-----------------------------------------
-Found 1 Myo device(s)
-```
+Both machines must be on the same network.
 
-**Understanding signal strength (RSSI):**
-- `-50 dBm` or higher: Excellent signal (very close)
-- `-50 to -70 dBm`: Good signal
-- `-70 to -90 dBm`: Weak signal (may have connection issues)
-- Below `-90 dBm`: Very weak (move closer)
+### 2.3 Connect to the BioRadio
 
-### 2.3 Ping a Specific Myo
-
-If you already know a MAC address, you can ping it directly to make it vibrate:
+Once paired, connect and verify:
 
 ```bash
-python src/myo_interface.py --ping D2:3B:85:94:32:8E
+# Auto-detect and connect
+python src/bioradio.py
+
+# Or specify the port directly
+python src/bioradio.py --port COM9        # Windows
+python src/bioradio.py --port /dev/cu.BioRadioAYA  # macOS (if working)
 ```
 
-The Myo will vibrate twice if the connection is successful.
-
-### 2.4 Connect Using MAC Address
-
-Once you know your Myo's MAC address, you can connect directly:
-
-```bash
-python src/myo_interface.py --mac D2:3B:85:94:32:8E
-```
-
-**Tip:** Write down your Myo's MAC address for future lab sessions!
-
-### 2.5 Quick Reference
-
-| Command | Description |
-|---------|-------------|
-| `--select` | Interactive mode: scan, ping, and select |
-| `--scan` | List all nearby Myo devices |
-| `--ping MAC` | Make a specific Myo vibrate |
-| `--mac MAC` | Connect directly to a specific Myo |
-
-### 2.6 Troubleshooting Device Discovery
-
-| Problem | Solution |
-|---------|----------|
-| No devices found | Wake up the Myo by shaking it; check that Bluetooth is enabled |
-| Ping fails | Move closer to the computer; make sure MyoConnect is closed |
-| Wrong Myo connects | Use `--select` mode to ping and verify before connecting |
-| Weak signal | Move the Myo closer to your computer's Bluetooth antenna |
+You should see device information including firmware version, battery level, and channel configuration.
 
 ---
 
-## Part 3: Connect and Visualize EMG Signals
+## Part 3: Electrode Placement and Signal Verification
 
-### 3.1 Myo Armband Placement
+### 3.1 Prepare the Skin
 
-Proper placement is critical for good signal quality:
+Good electrode contact is essential for clean EOG signals:
 
-1. **Wake up the Myo** - Move/shake the armband until the LEDs flash
-2. **Position on forearm** - Place the Myo on your forearm, approximately 2-3 inches below the elbow
-3. **Align the status bar** - The blue/orange status bar (the thicker pod) should point toward your hand, positioned on top of your forearm
-4. **Ensure snug fit** - Use the sizing clips to adjust. The armband should be snug but not uncomfortable
-5. **Center on muscle belly** - The pods should sit on the muscular part of the forearm, not on bone
+1. **Clean the skin** with alcohol wipes at each electrode site
+2. **Allow to dry** completely before applying electrodes
+3. **Use conductive gel** if using reusable electrodes
 
-**Tip:** If signals look weak, try repositioning the armband slightly or adjusting the tightness.
+### 3.2 Apply Electrodes
 
-### 3.2 Start the Myo Data Stream
+Apply electrodes in the following configuration:
 
-Open a terminal and run (using the MAC address from Part 2):
+| Electrode | Position | BioRadio Channel |
+|-----------|----------|------------------|
+| HEOG+ | Right eye, outer canthus (temple side) | Channel 1 (+) |
+| HEOG- | Left eye, outer canthus (temple side) | Channel 1 (-) |
+| VEOG+ | Above right eye, ~1 cm above eyebrow | Channel 2 (+) |
+| VEOG- | Below right eye, ~1 cm below lower eyelid | Channel 2 (-) |
+| GND | Center of forehead OR behind right ear (mastoid) | Ground |
+
+### 3.3 BioRadio Configuration
+
+For EOG recording, use these settings:
+
+* **Sample Rate:** 250 Hz (sufficient for EOG's low-frequency content)
+* **Channels:** 2 (HEOG and VEOG)
+* **Coupling:** DC coupling (to capture sustained gaze positions)
+* **Gain:** Adjust based on signal amplitude
+
+To set the sample rate:
+
+```bash
+python src/bioradio.py --port COM9 --rate 250
+```
+
+### 3.4 Start the Visualizer
+
+Open a terminal and start the BioRadio stream:
 
 ```bash
 conda activate biorobotics
-cd path/to/biorobotics_lab1
-
-# Option 1: Use interactive selection (recommended for classrooms)
-python src/myo_interface.py --select
-
-# Option 2: Connect directly with MAC address from Part 2
-python src/myo_interface.py --mac YOUR_MAC_ADDRESS
+python src/bioradio.py --port COM9 --lsl
 ```
 
-You should see:
-```
-==================================================
-Myo LSL Streamer (dl-myo)
-==================================================
-
-Using native Bluetooth - no dongle needed!
-IMPORTANT: Make sure MyoConnect is CLOSED!
-
-Scanning for Myo devices...
-Connected to Myo!
-Created LSL outlet: Myo_EMG (200Hz, 8ch)
-Created LSL outlet: Myo_IMU (50Hz, 10ch)
-Myo streamer started!
-Streaming EMG at 200Hz (raw mode)
-Streaming IMU at 50Hz (orientation + accel + gyro)
-```
-
-The Myo will vibrate briefly when connected.
-
-**Troubleshooting:**
-- If no Myo is found, make sure it's charged and awake (LEDs flashing)
-- Close MyoConnect if it's running (it will interfere)
-- Try `python src/myo_interface.py --scan` to see available devices
-
-### 3.3 Start the Visualizer
-
-Open a **second terminal** and run:
+In a **second terminal**, start the visualizer:
 
 ```bash
 conda activate biorobotics
 python src/visualizer.py
 ```
 
-In the visualizer:
-
 1. Click **"🔄 Scan for Streams"**
-2. You should see `Myo_EMG` and `Myo_IMU` in the list
-3. **Select both streams** (Ctrl+click or Cmd+click)
-4. Click **"▶ Connect Selected"**
+2. Select the BioRadio stream
+3. Click **"▶ Connect Selected"**
 
-You should now see real-time EMG and IMU data in separate tabs.
+### 3.5 Verify Signal Quality
 
-### Cannot Import PyQT6 Error
+With the visualizer running, perform these tests:
 
-On some systems, pip installing pyqt creates conflicts. So we need to remove the pip packages and install via condo.
+1. **Look straight ahead (Center)** - Both channels should show stable baselines
+2. **Look left, then right** - Channel 1 (HEOG) should deflect in opposite directions
+3. **Look up, then down** - Channel 2 (VEOG) should deflect in opposite directions
+4. **Blink** - Channel 2 (VEOG) should show large, sharp deflections
 
-```bash
-python -m pip uninstall -y PyQt6 PyQt6-Qt6 PyQt6-sip
-conda install -c conda-forge pyqt=6 pyqtgraph qt-main
-```
+> **Question 1:** Sketch the EOG waveforms you observe for each gaze direction (Left, Right, Up, Down, Center). Which channel responds to which movement? What is the approximate amplitude of each deflection?
 
-### 3.4 Explore the EMG Signals
-
-With the visualizer running:
-
-1. **Relax your arm** - Observe the baseline noise level
-2. **Make a fist** - Watch the EMG amplitude increase
-3. **Open your hand** - Notice which channels respond
-4. **Flex your wrist** (palm up, then palm down) - See different activation patterns
-5. **Rotate your forearm** (pronation/supination) - Observe the changes
-
-**Adjust the display:**
-- **EMG Amplitude:** Start with ±128, adjust if signals clip or are too small
-- **Time Window:** 5 seconds is good for seeing gestures
-- **Envelope checkbox:** Enable to see smoothed muscle activation
-
-> **Question 1:** Which EMG channels show the strongest activation when you make a fist? Which channels activate when you open your hand? Sketch or screenshot the patterns you observe.
-
-> **Question 2:** What is the approximate amplitude range of the EMG signal at rest vs. during a strong contraction?
+> **Question 2:** How do blink artifacts appear in the HEOG vs. VEOG channels? Why might blinks primarily affect the VEOG channel?
 
 ---
 
@@ -350,225 +304,187 @@ With the visualizer running:
 
 ### 4.1 Experimental Protocol
 
-You will collect EMG and IMU data for the following gestures:
+You will collect EOG data for the following gaze classes:
 
-| Gesture | Description |
-|---------|-------------|
-| `rest` | Arm relaxed, no movement |
-| `fist` | Close hand into a fist |
-| `open` | Spread fingers apart |
-| `wrist_flexion` | Bend wrist so palm faces toward you |
-| `wrist_extension` | Bend wrist so palm faces away |
-| `pronation` | Rotate forearm so palm faces down |
-| `supination` | Rotate forearm so palm faces up |
+| Class | Description | Expected HEOG | Expected VEOG |
+|-------|-------------|---------------|---------------|
+| `center` | Look straight ahead at fixation point | Baseline | Baseline |
+| `left` | Look to the left | Negative deflection | Minimal change |
+| `right` | Look to the right | Positive deflection | Minimal change |
+| `up` | Look upward | Minimal change | Positive deflection |
+| `down` | Look downward | Minimal change | Negative deflection |
+| `blink` | Single deliberate blink | Small artifact | Large sharp spike |
+| `double_blink` | Two rapid blinks | Small artifacts | Two sharp spikes |
 
 **Data collection parameters:**
-- **Trials per gesture:** 5-10 (minimum 5, 10 recommended for better classification)
-- **Trial duration:** 3-5 seconds of sustained gesture
-- **Rest between trials:** 2-3 seconds
+
+* **Trials per gaze direction:** 10-15 (minimum 10 for reliable classification)
+* **Trial duration:** 2-3 seconds of sustained gaze
+* **Rest between trials:** 2-3 seconds (return to center)
 
 ### 4.2 Recording Procedure
 
 In the visualizer:
 
 1. **Set Participant ID** - Enter a unique identifier (e.g., "P01", "GroupA_Alice")
-2. **Select Gesture** - Choose from dropdown or type custom name
-3. **Verify Trial Number** - Starts at 1, auto-increments after each recording
-4. **Set Output Directory** - Click 📁 to choose where files are saved (default: `./recordings`)
+2. **Select Gaze Direction** - Choose from dropdown
+3. **Verify Trial Number** - Auto-increments after each recording
+4. **Set Output Directory** - Click 📁 to choose save location
 
 **For each trial:**
 
-1. Prepare to perform the gesture
-2. Click **"⏺ START RECORDING"** (button turns red)
-3. Perform and hold the gesture for 3-5 seconds
+1. Look at the fixation point (center)
+2. When ready, click **"⏺ START RECORDING"**
+3. Move eyes to the target gaze direction and hold for 2-3 seconds
 4. Click **"⏹ STOP RECORDING"**
-5. Files are automatically saved, trial number increments
-
-**File naming convention:**
-```
-{participant}_{gesture}_trial{###}_{emg|imu}_{timestamp}.csv
-```
-
-Example files:
-```
-P01_fist_trial001_emg_20250125_143022.csv
-P01_fist_trial001_imu_20250125_143022.csv
-```
+5. Return to center, rest briefly
+6. Repeat for next trial
 
 ### 4.3 Data Collection Checklist
 
 Complete the following for each group member:
 
-| Gesture | Trials Completed | Notes |
-|---------|-----------------|-------|
-| rest | ☐ 5-10 | |
-| fist | ☐ 5-10 | |
-| open | ☐ 5-10 | |
-| wrist_flexion | ☐ 5-10 | |
-| wrist_extension | ☐ 5-10 | |
-| pronation | ☐ 5-10 | |
-| supination | ☐ 5-10 | |
+| Gaze Direction | Trials Completed | Notes |
+|----------------|------------------|-------|
+| center | ☐ 10-15 | |
+| left | ☐ 10-15 | |
+| right | ☐ 10-15 | |
+| up | ☐ 10-15 | |
+| down | ☐ 10-15 | |
+| blink | ☐ 10-15 | |
+| double_blink | ☐ 10-15 | |
 
-> **Question 3:** How consistent are your EMG patterns across trials of the same gesture? What factors might cause variability?
+> **Question 3:** How consistent are your EOG patterns across trials of the same gaze direction? What factors might cause trial-to-trial variability?
 
-> **Question 4:** Do different group members show similar or different EMG patterns for the same gesture? Why might this be?
-
----
-
-## Part 5: Proportional Control Demo
-
-This section demonstrates how EMG signals can be used for real-time control.
-
-### 5.1 Run the Proportional Control Demo
-
-With the Myo streaming (from Part 2), open a **new terminal**:
-
-```bash
-conda activate biorobotics
-python src/proportional_control.py
-```
-
-This script:
-1. Connects to the EMG stream
-2. Computes the envelope (smoothed activation level)
-3. Maps the activation to a control output
-4. Displays a real-time bar graph of the control signal
-
-### 5.2 Experiment with Control
-
-1. **Relax** - The bar should be near zero
-2. **Gradually increase grip strength** - Watch the bar rise proportionally
-3. **Try to hold a specific level** - Can you maintain 50% activation?
-4. **Quick contractions** - Observe the response time
-
-> **Question 5:** What is the approximate delay between your muscle contraction and the visual feedback? What factors contribute to this delay?
-
-> **Question 6:** How might proportional EMG control be used in a prosthetic hand or robotic interface?
+> **Question 4:** Did you notice any drift in the baseline over time? What might cause this, and how could it affect classification?
 
 ---
 
-## Part 6: Data Analysis
+## Part 5: Data Analysis
 
 Open the Jupyter notebook for guided analysis:
 
 ```bash
 conda activate biorobotics
-jupyter notebook Lab1_EMG_Analysis.ipynb
+jupyter notebook notebooks/Lab2_EOG_Analysis.ipynb
 ```
 
 The notebook will guide you through:
 
-1. **Loading and exploring your collected data**
-2. **Signal processing** - Filtering, rectification, envelope extraction
-3. **Feature extraction** - Mean, standard deviation, RMS, frequency features
-4. **Visualization** - Plotting signals and comparing gestures
-5. **Classification** - Using LDA, QDA, and K-means to classify gestures
-6. **Evaluation** - Confusion matrices and accuracy metrics
+### 5.1 Signal Processing
 
-> **Question 7:** Which features (e.g., mean amplitude, RMS, frequency content) are most useful for distinguishing between gestures?
+* **Loading and visualizing raw EOG data**
+* **Baseline correction** - Remove DC offset and slow drift
+* **Low-pass filtering** - Apply 30 Hz cutoff to remove noise
+* **Blink detection** - Identify and optionally remove blink artifacts
 
-> **Question 8:** Compare the classification accuracy of LDA, QDA, and K-means. Which performs best on your data and why?
+> **Question 5:** Compare the raw and filtered EOG signals. What types of noise does the low-pass filter remove? How does baseline correction affect the signal?
 
-> **Question 9:** How does the number of training trials affect classification accuracy?
+### 5.2 Feature Extraction
 
-> **Question 10:** If you were designing a gesture recognition system for a real application, what gestures would you choose and why?
+Extract features from each trial:
+
+* **Mean amplitude** - Average signal level during gaze
+* **Peak amplitude** - Maximum deflection from baseline
+* **Standard deviation** - Signal variability
+* **Saccade velocity** - Rate of change during eye movement
+* **Fixation stability** - Variance during sustained gaze
+
+> **Question 6:** Which features show the most separation between different gaze directions? Create scatter plots of 2-3 key features colored by gaze class.
+
+### 5.3 Dimensionality Reduction
+
+Apply PCA and ICA to understand the EOG signal structure:
+
+**Principal Component Analysis (PCA)**
+* Identify the principal axes of variance in the 2-channel EOG data
+* Visualize how gaze directions cluster in PC space
+
+**Independent Component Analysis (ICA)**
+* Separate statistically independent source signals
+* Can help isolate eye movement from blink artifacts
+
+> **Question 7:** How much variance is explained by each principal component? What do the first two principal components represent in terms of eye movements?
+
+> **Question 8:** How do the ICA-separated components differ from the original HEOG and VEOG channels? Can you identify components that correspond to horizontal movement, vertical movement, and blinks?
+
+### 5.4 Classification with SVM
+
+Train and evaluate Support Vector Machine classifiers:
+
+**Linear SVM**
+* Simple decision boundaries
+* Interpretable feature weights
+* Works well when classes are linearly separable
+
+**RBF (Radial Basis Function) SVM**
+* Non-linear decision boundaries
+* Can capture complex relationships
+* May achieve higher accuracy but less interpretable
+
+**Evaluation Metrics:**
+* Confusion matrix - See which gaze directions are confused with each other
+* Accuracy, Precision, Recall, F1-score
+* Cross-validation to assess generalization
+
+> **Question 9:** Compare the classification accuracy of Linear SVM vs. RBF SVM. Which performs better on your data, and why might this be?
+
+> **Question 10:** Examine the confusion matrix. Which gaze directions are most often confused with each other? Does this make sense given the electrode placement and expected signals?
+
+> **Question 11:** How does reducing the number of gaze classes (e.g., just left/right/center) affect classification accuracy?
 
 ---
 
-## BioRadio Support
+## Part 6: Discussion Questions
 
-The lab also supports the **GLNeuroTech BioRadio** for multi-channel biopotential recording. The BioRadio connects via Bluetooth Serial Port Profile (SPP) and provides configurable channels for EEG, EMG, ECG, and other physiological signals.
+Answer these questions in your lab report:
 
-### BioRadio on Windows
+> **Question 12:** What are the main differences between EOG and EMG signals in terms of frequency content, amplitude, and signal characteristics?
 
-The BioRadio works natively on Windows via Bluetooth:
+> **Question 13:** Why might EOG-based gaze tracking be preferred over camera-based eye tracking in certain applications? What are the limitations of EOG?
 
-```bash
-conda activate biorobotics
-python -c "from src.bioradio import BioRadio; r = BioRadio(); r.connect()"
-```
+> **Question 14:** If you were designing a practical EOG-based interface (e.g., for a wheelchair or computer control), which gaze commands would you include and why? How would you handle false positives?
 
-Windows creates two COM ports when the BioRadio pairs (e.g. COM9 and COM10). The code automatically detects and probes both to find the working bidirectional port. You can also specify the port directly:
-
-```python
-from src.bioradio import BioRadio
-radio = BioRadio(port="COM9")  # Use the LOWER COM port number
-radio.connect()
-```
-
-### BioRadio on macOS
-
-macOS Sonoma (14+) has a known limitation with Bluetooth Serial Port Profile (SPP) that prevents direct connection to the BioRadio. The recommended workaround is to use **Parallels Desktop** (or another VM) with a **USB Bluetooth adapter**:
-
-1. **Install Parallels Desktop** with a Windows VM
-2. **Get a USB Bluetooth adapter** (any standard USB BT 4.0+ dongle)
-3. **Plug in the USB adapter** and pass it through to the Windows VM:
-   - In Parallels: Devices > USB & Bluetooth > select your USB BT adapter
-4. **Pair the BioRadio** in the Windows VM's Bluetooth settings
-5. **Run the BioRadio code** inside the Windows VM
-
-> **Why is a USB adapter required?** The Mac's built-in Bluetooth is managed by macOS, which cannot establish the RFCOMM data channel the BioRadio needs. A USB adapter passed through to the VM lets Windows manage Bluetooth directly, bypassing this limitation.
-
-**Alternative: LSL Network Bridge**
-
-If you have a separate Windows machine available, you can stream BioRadio data to the Mac over the network using Lab Streaming Layer (LSL):
-
-```bash
-# On Windows (where BioRadio is paired):
-pip install pylsl pyserial
-python src/bioradio_lsl_bridge.py --send --port COM9
-
-# On Mac (receives data over the network):
-pip install pylsl
-python src/bioradio_lsl_bridge.py --receive
-```
-
-Both machines must be on the same network. The receiver provides a `BioRadioLSL` class for use in lab scripts.
+> **Question 15:** How could the blink signal be used as an additional control input rather than just an artifact to be removed?
 
 ---
 
 ## Troubleshooting
 
-### Myo Won't Connect
+### BioRadio Connection Issues
 
 | Problem | Solution |
 |---------|----------|
-| "No Myo devices found" | Wake up the Myo by moving it; check battery |
-| Connection drops | Move closer to the computer; reduce Bluetooth interference |
-| MyoConnect interfering | Close MyoConnect completely (check system tray) |
+| "No BioRadio port found" (Windows) | Check Device Manager > Ports; make sure device is paired via Bluetooth |
+| Two COM ports, neither works | Try the LOWER numbered port first; ensure BioCapture software is closed |
+| "No BioRadio port found" (macOS) | macOS Sonoma cannot connect directly; use Parallels + USB BT adapter |
+| Connection drops frequently | Move closer to computer; check battery level; reduce Bluetooth interference |
+| No response after connecting | Power cycle the BioRadio; re-pair via Bluetooth settings |
 
-### Weak or Noisy Signals
+### Signal Quality Issues
 
 | Problem | Solution |
 |---------|----------|
-| Very low amplitude | Tighten the armband; reposition on muscle belly |
-| High noise/artifacts | Ensure good skin contact; reduce movement |
-| 60Hz interference | Move away from power sources; the notch filter helps |
-| Signals look clipped | Reduce EMG amplitude setting in visualizer |
+| Very noisy signal | Check electrode contact; clean skin with alcohol; apply conductive gel |
+| Large baseline drift | Ensure DC coupling; allow electrodes to stabilize (2-3 min) |
+| No response to eye movements | Verify electrode placement; check channel assignments |
+| Blinks overwhelming the signal | Reduce VEOG electrode spacing; apply high-pass filter for movement-only analysis |
+| 60Hz interference | Move away from power sources; check electrode cable routing |
 
 ### Visualizer Issues
 
 | Problem | Solution |
 |---------|----------|
-| No streams found | Make sure myo_interface.py is running first |
-| Plots not updating | Check that you clicked "Connect Selected" |
-| Recording not saving | Check output directory permissions |
+| No streams found | Make sure bioradio.py with --lsl flag is running first |
+| Plot not updating | Click "Connect Selected" after selecting the stream |
+| Recording not saving | Check output directory permissions; ensure sufficient disk space |
 
-### BioRadio Won't Connect
-
-| Problem | Solution |
-|---------|----------|
-| No BioRadio port found (Windows) | Check Device Manager > Ports (COM & LPT); make sure device is paired |
-| No response from BioRadio (Windows) | Try the other COM port; use the lower-numbered port |
-| No BioRadio port found (macOS) | macOS Sonoma cannot connect directly; use Parallels + USB BT adapter |
-| Phantom serial port on macOS | The port `/dev/cu.BioRadioAYA` may exist but not carry data; use Parallels |
-
-### Common Errors
+### Common Python Errors
 
 ```
-ImportError: No module named 'myo'
+ImportError: No module named 'serial'
 ```
-→ Run `pip install dl-myo`
+→ Run `pip install pyserial` (note: import as `serial`, install as `pyserial`)
 
 ```
 ImportError: No module named 'pylsl'
@@ -576,9 +492,9 @@ ImportError: No module named 'pylsl'
 → Run `pip install pylsl`
 
 ```
-Bluetooth adapter not found
+serial.SerialException: could not open port
 ```
-→ Ensure Bluetooth is enabled on your computer
+→ Another program may be using the port; close BioCapture or other serial monitors
 
 ---
 
@@ -587,45 +503,55 @@ Bluetooth adapter not found
 Submit the following to MyCourses:
 
 ### 1. Data Package (ZIP file)
-- All collected EMG and IMU CSV files
-- Organized by participant if multiple group members recorded
+
+* All collected EOG CSV files organized by participant
+* Include both raw and any processed data files
 
 ### 2. Analysis Notebook
-- Completed `Lab1_EMG_Analysis.ipynb` with all cells executed
-- Include screenshots/figures showing:
-  - Raw EMG signals for at least 3 different gestures
+
+* Completed `Lab2_EOG_Analysis.ipynb` with all cells executed
+* Include figures showing:
+  - Raw EOG signals for each gaze direction
   - Processed/filtered signals
-  - Classification results (confusion matrix)
+  - PCA/ICA visualizations
+  - SVM classification results (confusion matrix, accuracy)
 
-### 3. Lab Questions
-Answer all questions (Q1-Q10) in your notebook or a separate document:
+### 3. Lab Report
 
-1. EMG channel activation patterns for fist vs. open hand
-2. EMG amplitude range at rest vs. contraction
-3. Consistency of EMG patterns across trials
-4. Variation between group members
-5. Delay in proportional control system
-6. Applications of proportional EMG control
-7. Most useful features for gesture classification
-8. Comparison of LDA, QDA, and K-means
-9. Effect of training set size on accuracy
-10. Gesture selection for a real application
+Answer all questions (Q1-Q15) in your notebook or a separate document:
+
+1. EOG waveforms for each gaze direction
+2. Blink artifacts in HEOG vs. VEOG
+3. Trial-to-trial consistency
+4. Baseline drift observations
+5. Effect of filtering on signal quality
+6. Feature separation between gaze classes
+7. PCA variance explanation
+8. ICA component interpretation
+9. Linear vs. RBF SVM comparison
+10. Confusion matrix analysis
+11. Effect of reducing gaze classes
+12. EOG vs. EMG signal differences
+13. EOG advantages and limitations
+14. Practical interface design considerations
+15. Using blinks as control input
 
 ---
 
 ## Additional Resources
 
-- **Lab Streaming Layer (LSL):** https://labstreaminglayer.org/
-- **dl-myo Library:** https://github.com/iomz/dl-myo
-- **scikit-learn Documentation:** https://scikit-learn.org/stable/
-- **EMG Signal Processing:** De Luca, C. J. (2002). Surface electromyography: Detection and recording.
+* **Lab Streaming Layer (LSL):** https://labstreaminglayer.org/
+* **BioRadio Documentation:** https://glneurotech.com/products/bioradio/
+* **EOG Signal Processing:** Bulling, A., et al. (2011). Eye movement analysis for activity recognition using electrooculography. IEEE TPAMI.
+* **scikit-learn SVM:** https://scikit-learn.org/stable/modules/svm.html
+* **ICA Tutorial:** https://scikit-learn.org/stable/modules/decomposition.html#ica
 
 ---
 
 ## Acknowledgments
 
-This lab uses the dl-myo library for Bluetooth communication with the Myo Armband without requiring the official Myo SDK or dongle.
+This lab uses a custom Python implementation of the BioRadio protocol, reverse-engineered from the GLNeuroTech SDK to enable cross-platform biosignal acquisition without proprietary software dependencies.
 
 ---
 
-*Last updated: January 2025*
+*Last updated: February 2025*
