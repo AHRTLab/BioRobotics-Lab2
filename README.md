@@ -79,6 +79,8 @@ The 8 EMG channels capture muscle activity from different regions of the forearm
 | `src/myo_interface.py` | Streams EMG and IMU data from Myo to LSL |
 | `src/visualizer.py` | Real-time visualization and data collection GUI |
 | `src/proportional_control.py` | Demonstrates EMG-based proportional control |
+| `src/bioradio.py` | Pure Python interface for the GLNeuroTech BioRadio device |
+| `src/bioradio_lsl_bridge.py` | LSL network bridge for streaming BioRadio data across machines |
 | `Lab1_EMG_Analysis.ipynb` | Jupyter notebook for data analysis (LDA, QDA, K-means) |
 | `environment.yml` | Conda environment specification |
 
@@ -473,6 +475,58 @@ The notebook will guide you through:
 
 ---
 
+## BioRadio Support
+
+The lab also supports the **GLNeuroTech BioRadio** for multi-channel biopotential recording. The BioRadio connects via Bluetooth Serial Port Profile (SPP) and provides configurable channels for EEG, EMG, ECG, and other physiological signals.
+
+### BioRadio on Windows
+
+The BioRadio works natively on Windows via Bluetooth:
+
+```bash
+conda activate biorobotics
+python -c "from src.bioradio import BioRadio; r = BioRadio(); r.connect()"
+```
+
+Windows creates two COM ports when the BioRadio pairs (e.g. COM9 and COM10). The code automatically detects and probes both to find the working bidirectional port. You can also specify the port directly:
+
+```python
+from src.bioradio import BioRadio
+radio = BioRadio(port="COM9")  # Use the LOWER COM port number
+radio.connect()
+```
+
+### BioRadio on macOS
+
+macOS Sonoma (14+) has a known limitation with Bluetooth Serial Port Profile (SPP) that prevents direct connection to the BioRadio. The recommended workaround is to use **Parallels Desktop** (or another VM) with a **USB Bluetooth adapter**:
+
+1. **Install Parallels Desktop** with a Windows VM
+2. **Get a USB Bluetooth adapter** (any standard USB BT 4.0+ dongle)
+3. **Plug in the USB adapter** and pass it through to the Windows VM:
+   - In Parallels: Devices > USB & Bluetooth > select your USB BT adapter
+4. **Pair the BioRadio** in the Windows VM's Bluetooth settings
+5. **Run the BioRadio code** inside the Windows VM
+
+> **Why is a USB adapter required?** The Mac's built-in Bluetooth is managed by macOS, which cannot establish the RFCOMM data channel the BioRadio needs. A USB adapter passed through to the VM lets Windows manage Bluetooth directly, bypassing this limitation.
+
+**Alternative: LSL Network Bridge**
+
+If you have a separate Windows machine available, you can stream BioRadio data to the Mac over the network using Lab Streaming Layer (LSL):
+
+```bash
+# On Windows (where BioRadio is paired):
+pip install pylsl pyserial
+python src/bioradio_lsl_bridge.py --send --port COM9
+
+# On Mac (receives data over the network):
+pip install pylsl
+python src/bioradio_lsl_bridge.py --receive
+```
+
+Both machines must be on the same network. The receiver provides a `BioRadioLSL` class for use in lab scripts.
+
+---
+
 ## Troubleshooting
 
 ### Myo Won't Connect
@@ -499,6 +553,15 @@ The notebook will guide you through:
 | No streams found | Make sure myo_interface.py is running first |
 | Plots not updating | Check that you clicked "Connect Selected" |
 | Recording not saving | Check output directory permissions |
+
+### BioRadio Won't Connect
+
+| Problem | Solution |
+|---------|----------|
+| No BioRadio port found (Windows) | Check Device Manager > Ports (COM & LPT); make sure device is paired |
+| No response from BioRadio (Windows) | Try the other COM port; use the lower-numbered port |
+| No BioRadio port found (macOS) | macOS Sonoma cannot connect directly; use Parallels + USB BT adapter |
+| Phantom serial port on macOS | The port `/dev/cu.BioRadioAYA` may exist but not carry data; use Parallels |
 
 ### Common Errors
 

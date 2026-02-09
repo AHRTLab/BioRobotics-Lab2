@@ -221,42 +221,6 @@ def test_bluetooth_status():
             ok("BioRadio found in Bluetooth profile:")
             for bl in bioradio_info:
                 print(f"      {bl.strip()}")
-
-            # Check for SPP / Serial Port service
-            bioradio_text = ' '.join(bioradio_info).lower()
-            has_spp = any(kw in bioradio_text for kw in [
-                'serial', 'spp', 'rfcomm', '0x1101'
-            ])
-            has_braille = 'braille' in bioradio_text
-            has_acl = 'acl' in bioradio_text
-
-            if has_spp:
-                ok("SPP (Serial Port Profile) service detected")
-            else:
-                fail("NO SPP (Serial Port Profile) service detected!")
-                warn("This is likely the root cause of the connection failure.")
-                print()
-                if has_braille:
-                    warn("macOS paired with 'Braille' service instead of Serial Port.")
-                    warn("This means macOS chose the WRONG Bluetooth profile.")
-                if has_acl:
-                    info("ACL (low-level BT link) is present but RFCOMM serial is missing.")
-                print()
-                warn("==> FIX: You need to re-pair with the correct BT serial profile.")
-                warn("    Steps:")
-                warn("    1. Turn OFF the BioRadio")
-                warn("    2. Open System Settings > Bluetooth")
-                warn("    3. Click (i) next to BioRadio AYA and choose 'Forget This Device'")
-                warn("    4. Restart Bluetooth:")
-                warn("       sudo pkill bluetoothd")
-                warn("       (or toggle Bluetooth off/on in System Settings)")
-                warn("    5. Turn ON the BioRadio")
-                warn("    6. When it appears in Bluetooth, pair it again")
-                warn("    7. Run this diagnostic again to verify the service type")
-                print()
-                warn("    If it still pairs as Braille/ACL, you may need to use")
-                warn("    the Bluetooth Explorer tool from Apple's Additional Tools")
-                warn("    to manually configure the SPP/RFCOMM channel.")
         else:
             warn("BioRadio NOT found in system_profiler Bluetooth output")
             info("This might just mean the name doesn't contain 'BioRadio'")
@@ -749,10 +713,9 @@ def test_iokit_info():
     try:
         result = subprocess.run(
             ["ioreg", "-l", "-w", "0"],
-            capture_output=True, timeout=10
+            capture_output=True, text=True, timeout=10
         )
-        raw_stdout = result.stdout.decode('utf-8', errors='replace')
-        output = raw_stdout.lower()
+        output = result.stdout.lower()
 
         # Count RFCOMM references
         rfcomm_count = output.count("rfcomm")
@@ -761,7 +724,7 @@ def test_iokit_info():
         info(f"IORegistry 'serial port' references: {spp_count}")
 
         # Look for BioRadio-specific entries
-        lines = raw_stdout.split('\n')
+        lines = result.stdout.split('\n')
         for i, line in enumerate(lines):
             if 'bioradio' in line.lower() or 'aya' in line.lower():
                 info(f"BioRadio-related IOKit entry:")
@@ -781,10 +744,9 @@ def test_iokit_info():
     try:
         result = subprocess.run(
             ["kextstat"],
-            capture_output=True, timeout=10
+            capture_output=True, text=True, timeout=10
         )
-        kext_stdout = result.stdout.decode('utf-8', errors='replace')
-        bt_kexts = [line for line in kext_stdout.split('\n')
+        bt_kexts = [line for line in result.stdout.split('\n')
                     if 'bluetooth' in line.lower() or 'serial' in line.lower()]
         if bt_kexts:
             info("Bluetooth/Serial kernel extensions loaded:")
@@ -800,10 +762,9 @@ def test_iokit_info():
         try:
             result = subprocess.run(
                 ["kmutil", "showloaded", "--list-only"],
-                capture_output=True, timeout=10
+                capture_output=True, text=True, timeout=10
             )
-            kmutil_stdout = result.stdout.decode('utf-8', errors='replace')
-            bt_entries = [line for line in kmutil_stdout.split('\n')
+            bt_entries = [line for line in result.stdout.split('\n')
                           if 'bluetooth' in line.lower() or 'serial' in line.lower()]
             if bt_entries:
                 info("Bluetooth/Serial kexts (via kmutil):")

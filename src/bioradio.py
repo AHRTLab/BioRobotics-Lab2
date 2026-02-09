@@ -4,7 +4,23 @@ bioradio.py - Pure Python/pyserial interface for the GLNeuroTech BioRadio device
 Replaces the .NET BioRadioSDK with a standalone Python implementation.
 Communicates via serial ports using the BioRadio's custom binary protocol.
 
-Cross-platform: Windows (COMx), macOS (/dev/cu.*), Linux.
+Platform Support:
+    Windows:  Full support via Bluetooth serial (COMx ports)
+    macOS:    Requires Parallels Desktop + USB Bluetooth adapter (see below)
+    Linux:    Supported via rfcomm serial ports
+
+macOS Note:
+    macOS Sonoma (14+) cannot establish the Bluetooth Serial Port Profile
+    (SPP/RFCOMM) data channel required by the BioRadio. The serial port
+    /dev/cu.BioRadioAYA may appear but will not carry data.
+
+    Workaround: Use Parallels Desktop with a USB Bluetooth adapter passed
+    through to a Windows VM. The USB adapter bypasses the macOS BT stack
+    and lets Windows manage the connection directly. Run this code inside
+    the Windows VM.
+
+    Alternative: Use bioradio_lsl_bridge.py to stream data from a Windows
+    machine to macOS over the network via Lab Streaming Layer (LSL).
 
 Requirements:
     pip install pyserial
@@ -19,8 +35,8 @@ Usage:
     # Or specify a port explicitly:
     # Windows  — use the LOWER COM port (e.g. COM9, NOT COM10):
     radio = BioRadio(port="COM9")
-    # macOS (use /dev/cu.* NOT /dev/tty.* — tty blocks on carrier detect!):
-    radio = BioRadio(port="/dev/cu.BioRadioAYA")
+    # macOS via Parallels — use the COM port shown in the Windows VM:
+    # radio = BioRadio(port="COM9")
 
     radio.connect()
     config = radio.get_configuration()
@@ -472,11 +488,12 @@ def scan_for_bioradio(verbose: bool = True,
         if not candidates:
             if IS_MACOS:
                 print("\n  Troubleshooting (macOS):")
-                print("    1. Make sure BioRadio is powered on and paired via Bluetooth")
-                print("    2. Check System Settings > Bluetooth for the device")
-                print("    3. Use /dev/cu.* ports, NOT /dev/tty.* (tty blocks on carrier detect!)")
-                print("    4. Try: ls /dev/cu.* /dev/tty.*  in Terminal")
-                print("    5. Port name includes device name, e.g. /dev/cu.BioRadioAYA")
+                print("    macOS Sonoma (14+) cannot establish Bluetooth SPP with the BioRadio.")
+                print("    The serial port may exist but will not carry data.")
+                print()
+                print("    Recommended: Use Parallels Desktop + USB Bluetooth adapter.")
+                print("    Pass the USB BT adapter through to a Windows VM and run there.")
+                print("    See README.md for full setup instructions.")
             elif IS_WINDOWS:
                 print("\n  Troubleshooting (Windows):")
                 print("    1. Check Device Manager > Ports (COM & LPT)")
